@@ -1,0 +1,11 @@
+# relocatable prefix: this file lives in <prefix>/<libdir>/pkgconfig
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: ringu
+Description: A io_uring interface for modern C++20
+Version: @PROJECT_VERSION@
+Cflags: -I${includedir}
+Libs: -L${libdir} -lringu

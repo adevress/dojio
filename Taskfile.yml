@@ -1,0 +1,40 @@
+version: '3'
+
+# Nixpkgs 24.05 release tag, provides clang-tools 18.1.6 (clang-format 18).
+# https://github.com/NixOS/nixpkgs/tree/24.05
+vars:
+  NIXPKGS_REV: 5646423bfac84ec68dfc60f2a322e627ef0d6a95
+  NIXPKGS_CLANG_TOOLS: clang-tools_18
+  NIXPKGS_URI: github:NixOS/nixpkgs/{{.NIXPKGS_REV}}#{{.NIXPKGS_CLANG_TOOLS}}
+  # Enable nix flakes through the native NIX_CONFIG env var (set in the
+  # nix-* tasks' env block).
+  NIX_CONFIG: 'experimental-features = nix-command flakes'
+
+tasks:
+  format:
+    cmds:
+      - find src/ include/ -name '*.[ch]pp' -exec clang-format -i {} \;
+    silent: true
+
+  check-format:
+    cmds:
+      - find src/ include/ -name '*.[ch]pp' -exec clang-format -fallback-style=none --Werror {} \;
+
+  # Runs clang-format 18 from a pinned nixpkgs
+  nix-format:
+    desc: Run the format task with clang-format 18 from a pinned nixpkgs
+    env:
+      NIX_CONFIG: '{{.NIX_CONFIG}}'
+    cmds:
+      - nix shell '{{.NIXPKGS_URI}}' --command task format
+
+  nix-check-format:
+    desc: Run the check-format task with clang-format 18 from a pinned nixpkgs
+    env:
+      NIX_CONFIG: '{{.NIX_CONFIG}}'
+    cmds:
+      - nix shell '{{.NIXPKGS_URI}}' --command task check-format
+
+  coverage:
+    cmds:
+      - ./scripts/coverage.sh
