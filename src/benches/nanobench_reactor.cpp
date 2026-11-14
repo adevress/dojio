@@ -64,7 +64,7 @@ int main() {
     std::vector<std::int32_t> fds;
     fds.reserve(k_batch);
     for (std::int32_t i = 0; i < k_batch; ++i) {
-      reactor.submit(ringu::Open::open(path, O_RDONLY, 0),
+      reactor.submit(ringu::Open::make(path, O_RDONLY, 0),
                      [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
                        if (r.has_value()) {
                          fds.push_back(r->value());
@@ -73,7 +73,7 @@ int main() {
     }
     reactor.process(ringu::Reactor::ProcessMode::Batch);
     for (const std::int32_t fd : fds) {
-      reactor.submit(ringu::Close::close(ringu::FileDescriptor{fd}),
+      reactor.submit(ringu::Close::make(ringu::FileDescriptor{fd}),
                      [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
     }
     reactor.process(ringu::Reactor::ProcessMode::Batch);

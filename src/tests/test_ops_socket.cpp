@@ -71,7 +71,7 @@ TEST_CASE("listen then accept over localhost TCP") {
 
   // listen through the reactor (executed inline when the batch is processed)
   bool listened = false;
-  reactor.submit(ringu::Listen::listen(ringu::FileDescriptor{lfd}, 16),
+  reactor.submit(ringu::Listen::make(ringu::FileDescriptor{lfd}, 16),
                  [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 0);
@@ -87,7 +87,7 @@ TEST_CASE("listen then accept over localhost TCP") {
 
   // accept through the reactor, with a buffer for the peer address
   ringu::FileDescriptor accepted{-1};
-  reactor.submit(ringu::Accept::accept(ringu::FileDescriptor{lfd}), std::vector<std::byte>(sizeof(sockaddr_storage)),
+  reactor.submit(ringu::Accept::make(ringu::FileDescriptor{lfd}), std::vector<std::byte>(sizeof(sockaddr_storage)),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res >= 0);
@@ -105,12 +105,12 @@ TEST_CASE("listen then accept over localhost TCP") {
 
   // exchange data over the accepted connection through the reactor
   std::string received;
-  reactor.submit(ringu::Recv::recv(accepted), std::vector<std::byte>(16),
+  reactor.submit(ringu::Recv::make(accepted), std::vector<std::byte>(16),
                  [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t) {
                    REQUIRE(r.has_value());
                    received = to_string(*r);
                  });
-  reactor.submit(ringu::Send::send(ringu::FileDescriptor{cfd}), to_bytes("hello"),
+  reactor.submit(ringu::Send::make(ringu::FileDescriptor{cfd}), to_bytes("hello"),
                  [](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 5);
@@ -151,7 +151,7 @@ TEST_CASE("accept on a non-listening socket fails") {
   const std::int32_t fd = static_cast<std::int32_t>(::socket(AF_INET, SOCK_STREAM, 0));
   REQUIRE(fd >= 0);
   bool called = false;
-  reactor.submit(ringu::Accept::accept(ringu::FileDescriptor{fd}),
+  reactor.submit(ringu::Accept::make(ringu::FileDescriptor{fd}),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
                    called = true;
                    CHECK_FALSE(r.has_value());

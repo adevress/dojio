@@ -52,7 +52,7 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
 
   // open
   ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::Open::open(path, O_RDWR),
+  reactor.submit(ringu::Open::make(path, O_RDWR),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res >= 0);
@@ -63,7 +63,7 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
 
   // write at the current position (0): overwrite the first 4 bytes with "ABCD"
   std::int32_t written = -1;
-  reactor.submit(ringu::Write::write(fd), to_bytes("ABCD"),
+  reactor.submit(ringu::Write::make(fd), to_bytes("ABCD"),
                  [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    written = res;
@@ -73,7 +73,7 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
 
   // pwrite at offset 8: "WXYZ" (does not move the current position)
   std::int32_t pwritten = -1;
-  reactor.submit(ringu::Pwrite::pwrite(fd, 8), to_bytes("WXYZ"),
+  reactor.submit(ringu::Pwrite::make(fd, 8), to_bytes("WXYZ"),
                  [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    pwritten = res;
@@ -84,7 +84,7 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
 
   // pread 8 bytes at offset 0
   std::string pread_out;
-  reactor.submit(ringu::Pread::pread(fd, 0), std::vector<std::byte>(8),
+  reactor.submit(ringu::Pread::make(fd, 0), std::vector<std::byte>(8),
                  [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 8);
@@ -96,7 +96,7 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
 
   // read at the current position (4 after the write): 6 bytes
   std::string read_out;
-  reactor.submit(ringu::Read::read(fd), std::vector<std::byte>(6),
+  reactor.submit(ringu::Read::make(fd), std::vector<std::byte>(6),
                  [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 6);
@@ -107,7 +107,7 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
 
   // lseek back to 0, then read 4 bytes from position 0
   std::int64_t new_pos = -1;
-  reactor.submit(ringu::Lseek::lseek(fd, 0, SEEK_SET),
+  reactor.submit(ringu::Lseek::make(fd, 0, SEEK_SET),
                  [&](ringu::Result<std::int64_t> r, ringu::OperationId, std::int32_t) {
                    REQUIRE(r.has_value());
                    new_pos = *r;
@@ -115,7 +115,7 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
   reactor.process(Mode::Batch);
   CHECK(new_pos == 0);
   std::string read2_out;
-  reactor.submit(ringu::Read::read(fd), std::vector<std::byte>(4),
+  reactor.submit(ringu::Read::make(fd), std::vector<std::byte>(4),
                  [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 4);
@@ -125,7 +125,7 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
   CHECK(read2_out == "ABCD");
 
   // fstat: the buffer (>= sizeof(statx)) receives a struct stat on success
-  reactor.submit(ringu::Fstat::fstat(fd), std::vector<std::byte>(sizeof(struct statx)),
+  reactor.submit(ringu::Fstat::make(fd), std::vector<std::byte>(sizeof(struct statx)),
                  [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 0);
@@ -137,7 +137,7 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
 
   // close
   bool closed = false;
-  reactor.submit(ringu::Close::close(fd), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+  reactor.submit(ringu::Close::make(fd), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
     REQUIRE(r.has_value());
     CHECK(res == 0);
     closed = true;
@@ -157,7 +157,7 @@ TEST_CASE("pread into a std::array buffer") {
   using Mode = ringu::Reactor::ProcessMode;
   const std::string path = make_tmp_file("array_buf", "0123456789");
   ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::Open::open(path, O_RDONLY, 0),
+  reactor.submit(ringu::Open::make(path, O_RDONLY, 0),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
                    REQUIRE(r.has_value());
                    fd = *r;
@@ -166,7 +166,7 @@ TEST_CASE("pread into a std::array buffer") {
   REQUIRE(fd.value() >= 0);
 
   std::array<std::byte, 4> buf{};
-  reactor.submit(ringu::Pread::pread(fd, 6), std::move(buf),
+  reactor.submit(ringu::Pread::make(fd, 6), std::move(buf),
                  [&](ringu::Result<std::array<std::byte, 4>> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 4);
@@ -174,7 +174,7 @@ TEST_CASE("pread into a std::array buffer") {
                    CHECK(std::string{reinterpret_cast<const char*>(b.data()), b.size()} == "6789");
                  });
   reactor.process(Mode::Batch);
-  reactor.submit(ringu::Close::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::Close::make(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
   reactor.process(Mode::Batch);
   ::unlink(path.c_str());
 }
@@ -183,7 +183,7 @@ TEST_CASE("open of a missing file fails with the mapped I/O code") {
   ringu::Reactor reactor{64};
   using State = ringu::Reactor::OperationState;
   bool called = false;
-  reactor.submit(ringu::Open::open("/tmp/ringu_definitely_missing_file_xyz", O_RDONLY, 0),
+  reactor.submit(ringu::Open::make("/tmp/ringu_definitely_missing_file_xyz", O_RDONLY, 0),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
                    called = true;
                    CHECK_FALSE(r.has_value());
@@ -202,17 +202,17 @@ TEST_CASE("read on a closed fd fails with EBADF") {
   using State = ringu::Reactor::OperationState;
   const std::string path = make_tmp_file("ebadf", "data");
   ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::Open::open(path, O_RDONLY, 0),
+  reactor.submit(ringu::Open::make(path, O_RDONLY, 0),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
                    REQUIRE(r.has_value());
                    fd = *r;
                  });
   reactor.process(Mode::Batch);
-  reactor.submit(ringu::Close::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::Close::make(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
   reactor.process(Mode::Batch);
 
   bool called = false;
-  reactor.submit(ringu::Pread::pread(fd, 0), std::vector<std::byte>(4),
+  reactor.submit(ringu::Pread::make(fd, 0), std::vector<std::byte>(4),
                  [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t) {
                    called = true;
                    CHECK_FALSE(r.has_value());

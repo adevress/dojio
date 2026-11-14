@@ -92,7 +92,7 @@ Result<Ipv4Endpoint> Ipv4Endpoint::parse(std::string_view ip, std::uint16_t port
   return Ipv4Endpoint{static_cast<std::uint32_t>(ntohl(addr.s_addr)), port};
 }
 
-Connect Connect::to(FileDescriptor fd, Ipv4Endpoint endpoint) {
+Connect Connect::make(FileDescriptor fd, Ipv4Endpoint endpoint) {
   Connect op{};
   op.fd = fd;
   op.endpoint = endpoint;

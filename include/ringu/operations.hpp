@@ -24,7 +24,7 @@ struct Open {
   std::int32_t flags = 0;
   std::uint32_t mode = 0;
   /// Constructs an Open operation for path with the given open(2) flags and mode.
-  static Open open(std::string path, std::int32_t flags, std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
+  static Open make(std::string path, std::int32_t flags, std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
     return Open{std::move(path), flags, mode};
   }
 };
@@ -34,7 +34,7 @@ struct Open {
 struct Read {
   FileDescriptor fd;
   /// Constructs a Read operation (read at the current file position).
-  static Read read(FileDescriptor fd) { return Read{fd}; }
+  static Read make(FileDescriptor fd) { return Read{fd}; }
 };
 
 /// Reads from fd at an explicit offset (pread(2) semantics). The buffer receives
@@ -43,14 +43,14 @@ struct Pread {
   FileDescriptor fd;
   std::uint64_t offset = 0;
   /// Constructs a Pread operation (read at an explicit offset).
-  static Pread pread(FileDescriptor fd, std::uint64_t offset) { return Pread{fd, offset}; }
+  static Pread make(FileDescriptor fd, std::uint64_t offset) { return Pread{fd, offset}; }
 };
 
 /// Writes the buffer to fd at the current file position (write(2) semantics).
 struct Write {
   FileDescriptor fd;
   /// Constructs a Write operation (write at the current file position).
-  static Write write(FileDescriptor fd) { return Write{fd}; }
+  static Write make(FileDescriptor fd) { return Write{fd}; }
 };
 
 /// Writes the buffer to fd at an explicit offset (pwrite(2) semantics).
@@ -58,7 +58,7 @@ struct Pwrite {
   FileDescriptor fd;
   std::uint64_t offset = 0;
   /// Constructs a Pwrite operation (write at an explicit offset).
-  static Pwrite pwrite(FileDescriptor fd, std::uint64_t offset) { return Pwrite{fd, offset}; }
+  static Pwrite make(FileDescriptor fd, std::uint64_t offset) { return Pwrite{fd, offset}; }
 };
 
 /// Seeks in fd (lseek(2) semantics). Completes with the new offset.
@@ -70,7 +70,7 @@ struct Lseek {
   std::int64_t offset = 0;
   std::int32_t whence = 0;
   /// Constructs an Lseek operation (lseek(2) semantics).
-  static Lseek lseek(FileDescriptor fd, std::int64_t offset, std::int32_t whence) { return Lseek{fd, offset, whence}; }
+  static Lseek make(FileDescriptor fd, std::int64_t offset, std::int32_t whence) { return Lseek{fd, offset, whence}; }
 };
 
 /// Stats fd (fstat(2) semantics) through IORING_OP_STATX with AT_EMPTY_PATH.
@@ -80,14 +80,14 @@ struct Lseek {
 struct Fstat {
   FileDescriptor fd;
   /// Constructs an Fstat operation (fstat(2) semantics).
-  static Fstat fstat(FileDescriptor fd) { return Fstat{fd}; }
+  static Fstat make(FileDescriptor fd) { return Fstat{fd}; }
 };
 
 /// Closes fd (close(2) semantics).
 struct Close {
   FileDescriptor fd;
   /// Constructs a Close operation.
-  static Close close(FileDescriptor fd) { return Close{fd}; }
+  static Close make(FileDescriptor fd) { return Close{fd}; }
 };
 
 /// Marks a socket as passive (listen(2) semantics).
@@ -98,7 +98,7 @@ struct Listen {
   FileDescriptor fd;
   std::int32_t backlog = 0;
   /// Constructs a Listen operation (listen(2) semantics).
-  static Listen listen(FileDescriptor fd, std::int32_t backlog) { return Listen{fd, backlog}; }
+  static Listen make(FileDescriptor fd, std::int32_t backlog) { return Listen{fd, backlog}; }
 };
 
 /// Accepts a connection on a listening socket (accept(2) semantics). Completes
@@ -110,8 +110,8 @@ struct Accept {
   std::uint32_t addr_len = 0; // filled by the Reactor from the buffer size
   /// Constructs an Accept operation. Submit it with an AcceptBuffer to receive the
   /// peer address (a sockaddr_storage), e.g.:
-  ///   reactor.submit(Accept::accept(lfd), AcceptBuffer{}, callback);
-  static Accept accept(FileDescriptor fd, std::int32_t flags = 0) { return Accept{fd, flags, 0}; }
+  ///   reactor.submit(Accept::make(lfd), AcceptBuffer{}, callback);
+  static Accept make(FileDescriptor fd, std::int32_t flags = 0) { return Accept{fd, flags, 0}; }
 };
 
 /// Sends the buffer on a connected socket (send(2) semantics).
@@ -119,7 +119,7 @@ struct Send {
   FileDescriptor fd;
   std::int32_t flags = 0;
   /// Constructs a Send operation (send(2) semantics on a connected socket).
-  static Send send(FileDescriptor fd, std::int32_t flags = 0) { return Send{fd, flags}; }
+  static Send make(FileDescriptor fd, std::int32_t flags = 0) { return Send{fd, flags}; }
 };
 
 /// Receives into the buffer from a connected socket (recv(2) semantics). On
@@ -128,7 +128,7 @@ struct Recv {
   FileDescriptor fd;
   std::int32_t flags = 0;
   /// Constructs a Recv operation (recv(2) semantics on a connected socket).
-  static Recv recv(FileDescriptor fd, std::int32_t flags = 0) { return Recv{fd, flags}; }
+  static Recv make(FileDescriptor fd, std::int32_t flags = 0) { return Recv{fd, flags}; }
 };
 
 /// Plain mirror of __kernel_timespec (identical layout: two 64-bit fields).
@@ -145,8 +145,8 @@ struct OpenAt {
   std::uint32_t mode = 0;
 
   /// Constructs an OpenAt operation.
-  static OpenAt at(FileDescriptor dirfd, std::string path, std::int32_t flags,
-                   std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
+  static OpenAt make(FileDescriptor dirfd, std::string path, std::int32_t flags,
+                     std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
     return OpenAt{dirfd, std::move(path), flags, mode};
   }
 };
@@ -156,10 +156,8 @@ struct Fsync {
   FileDescriptor fd;
   bool use_datasync = false;
 
-  /// Constructs an Fsync operation (fsync).
-  static Fsync sync(FileDescriptor fd) { return Fsync{fd, false}; }
-  /// Constructs an Fsync operation with datasync semantics (fdatasync).
-  static Fsync datasync(FileDescriptor fd) { return Fsync{fd, true}; }
+  /// Constructs an Fsync operation; pass use_datasync = true for fdatasync(2) semantics.
+  static Fsync make(FileDescriptor fd, bool use_datasync = false) { return Fsync{fd, use_datasync}; }
 };
 
 /// connect(2) on fd to an IPv4 endpoint. Completes with 0 on success.
@@ -173,14 +171,14 @@ struct Connect {
 
   /// Constructs a Connect operation (implemented in the library, where the sockaddr_in
   /// is built from the endpoint).
-  static Connect to(FileDescriptor fd, Ipv4Endpoint endpoint);
+  static Connect make(FileDescriptor fd, Ipv4Endpoint endpoint);
 };
 
 /// Backing operation of Timer: completes when the timeout expires.
 struct Timeout {
   Timespec ts{};
   /// Constructs a Timeout operation firing after the given duration.
-  static Timeout after(std::chrono::nanoseconds duration) {
+  static Timeout make(std::chrono::nanoseconds duration) {
     Timeout op{};
     const std::int64_t ns = duration.count();
     op.ts.sec = ns / 1000000000LL;

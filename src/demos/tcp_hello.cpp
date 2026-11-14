@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
       }
       // listen through the reactor (inline Listen operation)
       bool listened = false;
-      reactor.submit(ringu::Listen::listen(ringu::FileDescriptor{lfd}, 128),
+      reactor.submit(ringu::Listen::make(ringu::FileDescriptor{lfd}, 128),
                      [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
                        if (r.has_value())
                          listened = true;
@@ -82,50 +82,50 @@ int main(int argc, char** argv) {
       }
       ready.fetch_add(1);
 
-      reactor.submit(
-          ringu::Accept::accept(ringu::FileDescriptor{lfd}), std::vector<std::byte>(sizeof(sockaddr_storage)),
-          [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
-            if (!r.has_value()) {
-              reactor.request_stop();
-              return;
-            }
-            // per-connection state, self-owned so the recursive callbacks keep it alive
-            struct Conn {
-              ringu::Reactor& reactor;
-              std::int32_t cfd;
-              std::shared_ptr<std::vector<std::byte>> rbuf;
-              std::shared_ptr<std::vector<std::byte>> sbuf;
-              std::function<void()> do_recv;
-            };
-            auto conn = std::make_shared<Conn>(Conn{reactor,
-                                                    r->value(),
-                                                    std::make_shared<std::vector<std::byte>>(16),
-                                                    std::make_shared<std::vector<std::byte>>(to_bytes("world")),
-                                                    {}});
-            conn->do_recv = [conn] {
-              conn->reactor.submit(
-                  ringu::Recv::recv(ringu::FileDescriptor{conn->cfd}), std::move(*conn->rbuf),
-                  [conn](ringu::Result<std::vector<std::byte>> rr, ringu::OperationId, std::int32_t res) {
-                    if (!rr.has_value() || res <= 0) {
-                      conn->reactor.request_stop(); // client went away
-                      return;
-                    }
-                    *conn->rbuf = std::move(*rr);
-                    conn->rbuf->resize(16);
-                    conn->reactor.submit(
-                        ringu::Send::send(ringu::FileDescriptor{conn->cfd}), std::move(*conn->sbuf),
-                        [conn](ringu::Result<std::vector<std::byte>> sr, ringu::OperationId, std::int32_t) {
-                          if (!sr.has_value()) {
-                            conn->reactor.request_stop();
-                            return;
-                          }
-                          *conn->sbuf = std::move(*sr);
-                          conn->do_recv();
-                        });
-                  });
-            };
-            conn->do_recv();
-          });
+      reactor.submit(ringu::Accept::make(ringu::FileDescriptor{lfd}), std::vector<std::byte>(sizeof(sockaddr_storage)),
+                     [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+                       if (!r.has_value()) {
+                         reactor.request_stop();
+                         return;
+                       }
+                       // per-connection state, self-owned so the recursive callbacks keep it alive
+                       struct Conn {
+                         ringu::Reactor& reactor;
+                         std::int32_t cfd;
+                         std::shared_ptr<std::vector<std::byte>> rbuf;
+                         std::shared_ptr<std::vector<std::byte>> sbuf;
+                         std::function<void()> do_recv;
+                       };
+                       auto conn =
+                           std::make_shared<Conn>(Conn{reactor,
+                                                       r->value(),
+                                                       std::make_shared<std::vector<std::byte>>(16),
+                                                       std::make_shared<std::vector<std::byte>>(to_bytes("world")),
+                                                       {}});
+                       conn->do_recv = [conn] {
+                         conn->reactor.submit(
+                             ringu::Recv::make(ringu::FileDescriptor{conn->cfd}), std::move(*conn->rbuf),
+                             [conn](ringu::Result<std::vector<std::byte>> rr, ringu::OperationId, std::int32_t res) {
+                               if (!rr.has_value() || res <= 0) {
+                                 conn->reactor.request_stop(); // client went away
+                                 return;
+                               }
+                               *conn->rbuf = std::move(*rr);
+                               conn->rbuf->resize(16);
+                               conn->reactor.submit(
+                                   ringu::Send::make(ringu::FileDescriptor{conn->cfd}), std::move(*conn->sbuf),
+                                   [conn](ringu::Result<std::vector<std::byte>> sr, ringu::OperationId, std::int32_t) {
+                                     if (!sr.has_value()) {
+                                       conn->reactor.request_stop();
+                                       return;
+                                     }
+                                     *conn->sbuf = std::move(*sr);
+                                     conn->do_recv();
+                                   });
+                             });
+                       };
+                       conn->do_recv();
+                     });
       reactor.process(ringu::Reactor::ProcessMode::Forever);
       ::close(lfd);
     });
@@ -153,7 +153,7 @@ int main(int argc, char** argv) {
       const auto endpoint = ringu::Ipv4Endpoint::loopback(static_cast<std::uint16_t>(::ntohs(addr.sin_port)));
       bool connected = false;
       for (std::int32_t tries = 0; tries < 10000 && !connected; ++tries) {
-        reactor.submit(ringu::Connect::to(ringu::FileDescriptor{fd}, endpoint),
+        reactor.submit(ringu::Connect::make(ringu::FileDescriptor{fd}, endpoint),
                        [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
                          if (r.has_value())
                            connected = true;
@@ -174,7 +174,7 @@ int main(int argc, char** argv) {
       std::function<void()> do_send;
       std::function<void()> do_recv;
       do_recv = [&] {
-        reactor.submit(ringu::Recv::recv(ringu::FileDescriptor{fd}), std::move(*rbuf),
+        reactor.submit(ringu::Recv::make(ringu::FileDescriptor{fd}), std::move(*rbuf),
                        [&](ringu::Result<std::vector<std::byte>> rr, ringu::OperationId, std::int32_t res) {
                          if (!rr.has_value() || res <= 0) {
                            reactor.request_stop();
@@ -191,7 +191,7 @@ int main(int argc, char** argv) {
                        });
       };
       do_send = [&] {
-        reactor.submit(ringu::Send::send(ringu::FileDescriptor{fd}), std::move(*sbuf),
+        reactor.submit(ringu::Send::make(ringu::FileDescriptor{fd}), std::move(*sbuf),
                        [&](ringu::Result<std::vector<std::byte>> sr, ringu::OperationId, std::int32_t res) {
                          if (!sr.has_value() || res <= 0) {
                            reactor.request_stop();
