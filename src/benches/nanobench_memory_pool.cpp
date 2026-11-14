@@ -14,12 +14,12 @@ int main() {
   bench.title("ringu memory pool").warmup(2);
 
   bench.run("pool construction (256 x 4KB registered buffers)", [&] {
-    ringu::RegisteredMemoryPool pool{reactor.ring_fd(), 4096, 256};
+    ringu::RegisteredMemoryPool pool{reactor.ring(), 4096, 256};
     ankerl::nanobench::doNotOptimizeAway(pool.capacity());
   });
 
   bench.run("borrow 256 buffers", [&] {
-    ringu::RegisteredMemoryPool pool{reactor.ring_fd(), 4096, 256};
+    ringu::RegisteredMemoryPool pool{reactor.ring(), 4096, 256};
     std::vector<ringu::RegisteredBuffer> bufs;
     bufs.reserve(256);
     for (std::int32_t i = 0; i < 256; ++i) {
@@ -29,7 +29,7 @@ int main() {
   });
 
   bench.run("borrow + return 1 buffer x1000", [&] {
-    ringu::RegisteredMemoryPool pool{reactor.ring_fd(), 4096, 8};
+    ringu::RegisteredMemoryPool pool{reactor.ring(), 4096, 8};
     for (std::int32_t i = 0; i < 1000; ++i) {
       ringu::RegisteredBuffer buf = pool.borrow();
       ankerl::nanobench::doNotOptimizeAway(buf.data());
@@ -38,7 +38,7 @@ int main() {
   });
 
   bench.run("borrow + return 8 buffers x1000", [&] {
-    ringu::RegisteredMemoryPool pool{reactor.ring_fd(), 4096, 8};
+    ringu::RegisteredMemoryPool pool{reactor.ring(), 4096, 8};
     for (std::int32_t i = 0; i < 1000; ++i) {
       std::vector<ringu::RegisteredBuffer> bufs;
       bufs.reserve(8);

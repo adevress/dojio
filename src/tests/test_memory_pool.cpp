@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <new>
 #include <stdexcept>
 #include <vector>
 
@@ -15,7 +16,7 @@
 
 TEST_CASE("RegisteredMemoryPool borrow/return tracks the active counter") {
   ringu::Reactor reactor{64};
-  ringu::RegisteredMemoryPool pool{reactor.ring_fd(), 4096, 8};
+  ringu::RegisteredMemoryPool pool{reactor.ring(), 4096, 8};
   CHECK(pool.capacity() == 8);
   CHECK(pool.buffer_size() == 4096);
   CHECK(pool.active_count() == 0);
@@ -27,14 +28,33 @@ TEST_CASE("RegisteredMemoryPool borrow/return tracks the active counter") {
     CHECK(buf.size() == 4096);
     CHECK(pool.active_count() == 1);
     std::memset(buf.data(), 0xAB, buf.size());
+    // the backing memory is whole mmap'ed pages, every chunk is cache-line aligned
+    constexpr std::size_t cache_line = std::hardware_destructive_interference_size;
+    const long page = ::sysconf(_SC_PAGESIZE);
+    CHECK(reinterpret_cast<std::uintptr_t>(pool.base()) % static_cast<std::uintptr_t>(page) == 0);
+    CHECK(reinterpret_cast<std::uintptr_t>(buf.data()) % static_cast<std::uintptr_t>(cache_line) == 0);
   }
   CHECK(pool.active_count() == 0);
   CHECK(pool.available() == 8);
 }
 
+TEST_CASE("chunks are cache-line aligned even when buffer_size is not a multiple of it") {
+  ringu::Reactor reactor{64};
+  ringu::RegisteredMemoryPool pool{reactor.ring(), 100, 4};
+  constexpr std::size_t cache_line = std::hardware_destructive_interference_size;
+  std::vector<ringu::RegisteredBuffer> bufs;
+  for (std::int32_t i = 0; i < 4; ++i) {
+    bufs.push_back(pool.borrow());
+  }
+  for (const auto& b : bufs) {
+    CHECK(b.size() == 100);
+    CHECK(reinterpret_cast<std::uintptr_t>(b.data()) % static_cast<std::uintptr_t>(cache_line) == 0);
+  }
+}
+
 TEST_CASE("RegisteredMemoryPool exhaustion throws and buffers are reusable") {
   ringu::Reactor reactor{64};
-  ringu::RegisteredMemoryPool pool{reactor.ring_fd(), 64, 4};
+  ringu::RegisteredMemoryPool pool{reactor.ring(), 64, 4};
   std::vector<ringu::RegisteredBuffer> bufs;
   for (std::int32_t i = 0; i < 4; ++i) {
     bufs.push_back(pool.borrow());
@@ -50,7 +70,7 @@ TEST_CASE("RegisteredMemoryPool exhaustion throws and buffers are reusable") {
 
 TEST_CASE("RegisteredBuffer move semantics transfer ownership") {
   ringu::Reactor reactor{64};
-  ringu::RegisteredMemoryPool pool{reactor.ring_fd(), 128, 2};
+  ringu::RegisteredMemoryPool pool{reactor.ring(), 128, 2};
   ringu::RegisteredBuffer a = pool.borrow();
   const std::byte* data = a.data();
   ringu::RegisteredBuffer b = std::move(a);
@@ -80,7 +100,7 @@ TEST_CASE("RegisteredBuffer is usable as an io_uring fixed buffer for read") {
   reactor.process(ringu::Reactor::ProcessMode::Batch);
   REQUIRE(fd.value() >= 0);
 
-  ringu::RegisteredMemoryPool pool{reactor.ring_fd(), 4096, 4};
+  ringu::RegisteredMemoryPool pool{reactor.ring(), 4096, 4};
   std::vector<std::byte> out;
   reactor.submit(ringu::Pread::make(fd, 0), pool.borrow(),
                  [&](ringu::Result<ringu::RegisteredBuffer> r, ringu::OperationId, std::int32_t res) {
@@ -107,7 +127,7 @@ TEST_CASE("Pool invariant: destroying the pool with an active buffer terminates"
     // reset the signal handlers inherited from doctest so the child dies cleanly.
     ::signal(SIGABRT, SIG_DFL);
     ringu::Reactor reactor{16};
-    auto* pool = new ringu::RegisteredMemoryPool{reactor.ring_fd(), 64, 2};
+    auto* pool = new ringu::RegisteredMemoryPool{reactor.ring(), 64, 2};
     ringu::RegisteredBuffer buf = pool->borrow();
     (void)buf;
     delete pool; // invariant violation: active_count == 1

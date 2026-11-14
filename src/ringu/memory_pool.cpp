@@ -3,7 +3,9 @@
 #include <ringu/contracts.hpp>
 #include <ringu/ring.hpp>
 
+#include <sys/mman.h>
 #include <sys/uio.h>
+#include <unistd.h>
 
 #include <limits>
 #include <new>
@@ -11,6 +13,18 @@
 #include <vector>
 
 namespace ringu {
+
+namespace {
+
+// sysconf(3) returns long (C API boundary); narrowed with an explicit cast.
+// (The cache line size has a portable standard equivalent,
+// std::hardware_destructive_interference_size, used instead.)
+std::uint64_t query_page_size() {
+  const long v = ::sysconf(_SC_PAGESIZE);
+  return v > 0 ? static_cast<std::uint64_t>(v) : std::uint64_t{4096};
+}
+
+} // namespace
 
 RegisteredBuffer::RegisteredBuffer(RegisteredMemoryPool& pool, std::uint64_t index) : pool_(&pool), index_(index) {}
 
@@ -39,26 +53,41 @@ void RegisteredBuffer::release() noexcept {
 
 std::byte* RegisteredBuffer::data() const {
   enforce_precondition(pool_ != nullptr);
-  return pool_->base() + static_cast<std::size_t>(index_ * pool_->buffer_size());
+  return pool_->base() + static_cast<std::size_t>(index_ * pool_->chunk_size_);
 }
 
 std::uint64_t RegisteredBuffer::size() const { return pool_ != nullptr ? pool_->buffer_size() : 0; }
 
-RegisteredMemoryPool::RegisteredMemoryPool(std::int32_t ring_fd, std::uint64_t buffer_size, std::uint64_t count,
+RegisteredMemoryPool::RegisteredMemoryPool(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
                                            std::pmr::memory_resource* resource)
-    : ring_fd_(ring_fd), buffer_size_(buffer_size), count_(count), resource_(resource), free_(count, 1, resource) {
+    : ring_(ring), buffer_size_(buffer_size), count_(count), resource_(resource), free_(count, 1, resource) {
   enforce_precondition(buffer_size > 0 && count > 0);
-  enforce_precondition(count <= std::numeric_limits<std::uint64_t>::max() / buffer_size);
-  const std::uint64_t total = buffer_size * count;
-  // memory_resource::allocate takes a size_t (C++ std ABI boundary)
-  memory_ = static_cast<std::byte*>(resource_->allocate(static_cast<std::size_t>(total), alignof(std::max_align_t)));
+  // portable cache line size from the C++ standard (<new>)
+  cache_line_size_ = static_cast<std::uint64_t>(std::hardware_destructive_interference_size);
+  page_size_ = query_page_size();
+  // every chunk starts on a cache-line boundary: round the stride up to the cache line size
+  chunk_size_ = (buffer_size_ + cache_line_size_ - 1) / cache_line_size_ * cache_line_size_;
+  enforce_precondition(count_ <= std::numeric_limits<std::uint64_t>::max() / chunk_size_);
+  const std::uint64_t total = chunk_size_ * count_;
+  enforce_precondition(total <= std::numeric_limits<std::uint64_t>::max() - page_size_ + 1);
+  // the backing memory is allocated as whole pages and distributed in chunks
+  const std::uint64_t pages = (total + page_size_ - 1) / page_size_;
+  mapped_size_ = pages * page_size_;
+  // mmap takes a size_t length and an off_t offset (C API boundaries)
+  void* p = ::mmap(nullptr, static_cast<std::size_t>(mapped_size_), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
+                   -1, 0);
+  if (p == MAP_FAILED) {
+    throw std::runtime_error("RegisteredMemoryPool: mmap failed");
+  }
+  memory_ = static_cast<std::byte*>(p);
+  // register every chunk with the ring as a fixed buffer
   std::vector<iovec> iovecs(static_cast<std::size_t>(count));
   for (std::uint64_t i = 0; i < count; ++i) {
-    iovecs[static_cast<std::size_t>(i)].iov_base = memory_ + static_cast<std::size_t>(i * buffer_size);
-    iovecs[static_cast<std::size_t>(i)].iov_len = static_cast<std::size_t>(buffer_size);
+    iovecs[static_cast<std::size_t>(i)].iov_base = memory_ + static_cast<std::size_t>(i * chunk_size_);
+    iovecs[static_cast<std::size_t>(i)].iov_len = static_cast<std::size_t>(chunk_size_);
   }
-  if (detail::register_buffers(ring_fd_, iovecs.data(), static_cast<std::uint32_t>(count)) != 0) {
-    resource_->deallocate(memory_, static_cast<std::size_t>(total), alignof(std::max_align_t));
+  if (detail::register_buffers(ring_.fd(), iovecs.data(), static_cast<std::uint32_t>(count)) != 0) {
+    ::munmap(memory_, static_cast<std::size_t>(mapped_size_));
     memory_ = nullptr;
     throw std::runtime_error("RegisteredMemoryPool: io_uring_register(IORING_REGISTER_BUFFERS) failed");
   }
@@ -69,9 +98,10 @@ RegisteredMemoryPool::~RegisteredMemoryPool() {
   // (The destructor is noexcept, so the std::logic_error raised on violation turns
   // into std::terminate.)
   enforce_invariant(active_count_ == 0);
-  detail::unregister_buffers(ring_fd_);
+  detail::unregister_buffers(ring_.fd());
   if (memory_ != nullptr) {
-    resource_->deallocate(memory_, static_cast<std::size_t>(buffer_size_ * count_), alignof(std::max_align_t));
+    // munmap takes a size_t length (C API boundary)
+    ::munmap(memory_, static_cast<std::size_t>(mapped_size_));
   }
 }
 

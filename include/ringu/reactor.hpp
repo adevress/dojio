@@ -104,9 +104,12 @@ public:
   /// Number of operations in the given state. Cancellation counts as a failure.
   [[nodiscard]] std::uint64_t count_operations(OperationState state) const;
 
-  /// File descriptor of the underlying io_uring instance (e.g. to create a
-  /// RegisteredMemoryPool on this reactor).
+  /// File descriptor of the underlying io_uring instance.
   [[nodiscard]] std::int32_t ring_fd() const;
+
+  /// The underlying io_uring ring (e.g. to create a RegisteredMemoryPool on this
+  /// reactor).
+  [[nodiscard]] detail::IoUring& ring() { return *ring_; }
 
 private:
   template <typename Op, typename Buffer, typename Callback>

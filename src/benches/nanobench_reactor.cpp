@@ -36,7 +36,7 @@ int main() {
   const std::int32_t file_fd = static_cast<std::int32_t>(::open(path.c_str(), O_RDONLY));
 
   ringu::Reactor reactor{1024};
-  ringu::RegisteredMemoryPool pool{reactor.ring_fd(), k_chunk, 256};
+  ringu::RegisteredMemoryPool pool{reactor.ring(), k_chunk, 256};
 
   ankerl::nanobench::Bench bench;
   bench.title("ringu reactor").unit("op").warmup(2);
