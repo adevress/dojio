@@ -14,7 +14,6 @@
 #include <variant>
 #include <vector>
 
-#include <ringu/compat.hpp>
 #include <ringu/reactor.hpp>
 #include <ringu/result.hpp>
 
@@ -31,7 +30,7 @@ std::string make_tmp_file(const std::string& tag, std::string_view content) {
   const std::int32_t fd = static_cast<std::int32_t>(::open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644));
   REQUIRE(fd >= 0);
   REQUIRE(::write(fd, content.data(), static_cast<std::size_t>(content.size())) ==
-          static_cast<std::ssize_t>(content.size()));
+          static_cast<::ssize_t>(content.size()));
   ::close(fd);
   return path;
 }

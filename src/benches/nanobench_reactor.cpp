@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#include <ringu/compat.hpp>
 #include <ringu/memory_pool.hpp>
 #include <ringu/reactor.hpp>
 
@@ -23,7 +22,7 @@ std::string make_bench_file() {
   const std::int32_t fd = static_cast<std::int32_t>(::open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644));
   std::vector<char> chunk(65536, 'x');
   for (std::int32_t i = 0; i < 16; ++i) {
-    const std::ssize_t nw = ::write(fd, chunk.data(), chunk.size());
+    const ::ssize_t nw = ::write(fd, chunk.data(), chunk.size());
     (void)nw;
   }
   ::close(fd);

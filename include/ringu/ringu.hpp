@@ -4,7 +4,6 @@
 
 #include <ringu/action.hpp>
 #include <ringu/buffer.hpp>
-#include <ringu/compat.hpp>
 #include <ringu/contracts.hpp>
 #include <ringu/fd.hpp>
 #include <ringu/memory_pool.hpp>
