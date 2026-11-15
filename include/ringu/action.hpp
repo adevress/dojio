@@ -45,9 +45,6 @@ concept BufferLike = requires(T& t) {
 template <typename Op, typename Buffer> struct result_value {
   using type = Buffer;
 };
-template <typename Buffer> struct result_value<Open, Buffer> {
-  using type = FileDescriptor;
-};
 template <typename Buffer> struct result_value<Accept, Buffer> {
   using type = FileDescriptor;
 };
@@ -179,9 +176,9 @@ private:
   }
 
   void fill_sqe(Sqe& sqe) {
-    if constexpr (std::is_same_v<Op, Open>) {
+    if constexpr (std::is_same_v<Op, OpenAt>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::OpenAt);
-      sqe.fd = k_at_fdcwd;
+      sqe.fd = op_.dirfd.value();
       sqe.addr = reinterpret_cast<std::uint64_t>(op_.path.c_str());
       sqe.op_flags = static_cast<std::uint32_t>(op_.flags);
       sqe.len = op_.mode;
@@ -219,12 +216,6 @@ private:
       sqe.addr2 = reinterpret_cast<std::uint64_t>(buffer_.data());
       sqe.len = k_statx_basic_stats;
       sqe.op_flags = k_at_empty_path;
-    } else if constexpr (std::is_same_v<Op, OpenAt>) {
-      sqe.opcode = static_cast<std::uint8_t>(IoOp::OpenAt);
-      sqe.fd = op_.dirfd.value();
-      sqe.addr = reinterpret_cast<std::uint64_t>(op_.path.c_str());
-      sqe.op_flags = static_cast<std::uint32_t>(op_.flags);
-      sqe.len = op_.mode;
     } else if constexpr (std::is_same_v<Op, Fsync>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Fsync);
       sqe.fd = op_.fd.value();

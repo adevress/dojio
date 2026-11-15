@@ -32,12 +32,18 @@ TEST_CASE("StaticBuffer is a fixed-size buffer") {
 TEST_CASE("every operation struct has a static factory returning a constructed operation") {
   const ringu::FileDescriptor fd{7};
 
-  const auto open = ringu::Open::make("/tmp/some_file", O_RDWR, 0644);
+  const auto open = ringu::OpenAt::make("/tmp/some_file", O_RDWR, 0644);
+  CHECK(open.dirfd == ringu::FileDescriptor{ringu::k_at_fdcwd});
   CHECK(open.path == "/tmp/some_file");
   CHECK(open.flags == O_RDWR);
   CHECK(open.mode == 0644);
-  const auto open_default_mode = ringu::Open::make("/tmp/some_file", O_RDONLY);
+  const auto open_default_mode = ringu::OpenAt::make("/tmp/some_file", O_RDONLY);
   CHECK(open_default_mode.mode == 0644);
+  const auto openat = ringu::OpenAt::make(fd, "/tmp/some_file", O_RDONLY);
+  CHECK(openat.dirfd == fd);
+  CHECK(openat.path == "/tmp/some_file");
+  CHECK(openat.flags == O_RDONLY);
+  CHECK(openat.mode == 0644);
 
   CHECK(ringu::Read::make(fd).fd == fd);
   CHECK(ringu::Pread::make(fd, 42).fd == fd);

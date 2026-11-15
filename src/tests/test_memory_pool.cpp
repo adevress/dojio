@@ -92,7 +92,7 @@ TEST_CASE("RegisteredBuffer is usable as an io_uring fixed buffer for read") {
     ::close(fd);
   }
   ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::Open::make(path, O_RDONLY, 0),
+  reactor.submit(ringu::OpenAt::make(path, O_RDONLY, 0),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
                    REQUIRE(r.has_value());
                    fd = *r;

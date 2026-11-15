@@ -52,7 +52,7 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
 
   // open
   ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::Open::make(path, O_RDWR),
+  reactor.submit(ringu::OpenAt::make(path, O_RDWR),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res >= 0);
@@ -157,7 +157,7 @@ TEST_CASE("pread into a std::array buffer") {
   using Mode = ringu::Reactor::ProcessMode;
   const std::string path = make_tmp_file("array_buf", "0123456789");
   ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::Open::make(path, O_RDONLY, 0),
+  reactor.submit(ringu::OpenAt::make(path, O_RDONLY, 0),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
                    REQUIRE(r.has_value());
                    fd = *r;
@@ -183,7 +183,7 @@ TEST_CASE("open of a missing file fails with the mapped I/O code") {
   ringu::Reactor reactor{64};
   using State = ringu::Reactor::OperationState;
   bool called = false;
-  reactor.submit(ringu::Open::make("/tmp/ringu_definitely_missing_file_xyz", O_RDONLY, 0),
+  reactor.submit(ringu::OpenAt::make("/tmp/ringu_definitely_missing_file_xyz", O_RDONLY, 0),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
                    called = true;
                    CHECK_FALSE(r.has_value());
@@ -202,7 +202,7 @@ TEST_CASE("read on a closed fd fails with EBADF") {
   using State = ringu::Reactor::OperationState;
   const std::string path = make_tmp_file("ebadf", "data");
   ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::Open::make(path, O_RDONLY, 0),
+  reactor.submit(ringu::OpenAt::make(path, O_RDONLY, 0),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
                    REQUIRE(r.has_value());
                    fd = *r;

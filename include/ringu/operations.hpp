@@ -10,6 +10,7 @@
 #include <ringu/buffer.hpp>
 #include <ringu/fd.hpp>
 #include <ringu/socket.hpp>
+#include <ringu/sqe.hpp>
 
 namespace ringu {
 
@@ -18,14 +19,24 @@ namespace ringu {
 /// sizeof(struct stat) bytes are rewritten as a struct stat.
 inline constexpr std::uint64_t k_statx_size = 256;
 
-/// Opens path with flags/mode (open(2) semantics). Completes with the new FileDescriptor.
-struct Open {
+/// Opens path with flags/mode (openat(2) semantics; open(2) when dirfd is AT_FDCWD).
+/// Completes with the new FileDescriptor.
+struct OpenAt {
+  FileDescriptor dirfd{k_at_fdcwd};
   std::string path;
   std::int32_t flags = 0;
   std::uint32_t mode = 0;
-  /// Constructs an Open operation for path with the given open(2) flags and mode.
-  static Open make(std::string path, std::int32_t flags, std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
-    return Open{std::move(path), flags, mode};
+
+  /// Constructs an OpenAt operation with open(2) semantics (path relative to the
+  /// current working directory).
+  static OpenAt make(std::string path, std::int32_t flags, std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
+    return OpenAt{FileDescriptor{k_at_fdcwd}, std::move(path), flags, mode};
+  }
+
+  /// Constructs an OpenAt operation with openat(2) semantics (path relative to dirfd).
+  static OpenAt make(FileDescriptor dirfd, std::string path, std::int32_t flags,
+                     std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
+    return OpenAt{dirfd, std::move(path), flags, mode};
   }
 };
 
@@ -137,20 +148,6 @@ struct Timespec {
   std::int64_t nsec = 0;
 };
 
-/// Opens path relative to dirfd (openat(2) semantics). Completes with the new FileDescriptor.
-struct OpenAt {
-  FileDescriptor dirfd;
-  std::string path;
-  std::int32_t flags = 0;
-  std::uint32_t mode = 0;
-
-  /// Constructs an OpenAt operation.
-  static OpenAt make(FileDescriptor dirfd, std::string path, std::int32_t flags,
-                     std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
-    return OpenAt{dirfd, std::move(path), flags, mode};
-  }
-};
-
 /// fsync(2) on fd; datasync selects fdatasync(2) semantics. Completes with 0.
 struct Fsync {
   FileDescriptor fd;
@@ -189,20 +186,20 @@ struct Timeout {
 
 /// Variant of every operation supported by the Reactor. Each operation is its own
 /// struct held by this variant.
-using Operation = std::variant<Open, OpenAt, Read, Pread, Write, Pwrite, Lseek, Fstat, Close, Listen, Accept, Send,
-                               Recv, Timeout, Fsync, Connect>;
+using Operation = std::variant<OpenAt, Read, Pread, Write, Pwrite, Lseek, Fstat, Close, Listen, Accept, Send, Recv,
+                               Timeout, Fsync, Connect>;
 
 /// True when Op is one of the operation structs of the Operation variant.
 template <typename Op>
 inline constexpr bool is_operation_v =
-    std::is_same_v<std::decay_t<Op>, Open> || std::is_same_v<std::decay_t<Op>, OpenAt> ||
-    std::is_same_v<std::decay_t<Op>, Fsync> || std::is_same_v<std::decay_t<Op>, Connect> ||
-    std::is_same_v<std::decay_t<Op>, Read> || std::is_same_v<std::decay_t<Op>, Pread> ||
-    std::is_same_v<std::decay_t<Op>, Write> || std::is_same_v<std::decay_t<Op>, Pwrite> ||
-    std::is_same_v<std::decay_t<Op>, Lseek> || std::is_same_v<std::decay_t<Op>, Fstat> ||
-    std::is_same_v<std::decay_t<Op>, Close> || std::is_same_v<std::decay_t<Op>, Listen> ||
-    std::is_same_v<std::decay_t<Op>, Accept> || std::is_same_v<std::decay_t<Op>, Send> ||
-    std::is_same_v<std::decay_t<Op>, Recv> || std::is_same_v<std::decay_t<Op>, Timeout>;
+    std::is_same_v<std::decay_t<Op>, OpenAt> || std::is_same_v<std::decay_t<Op>, Fsync> ||
+    std::is_same_v<std::decay_t<Op>, Connect> || std::is_same_v<std::decay_t<Op>, Read> ||
+    std::is_same_v<std::decay_t<Op>, Pread> || std::is_same_v<std::decay_t<Op>, Write> ||
+    std::is_same_v<std::decay_t<Op>, Pwrite> || std::is_same_v<std::decay_t<Op>, Lseek> ||
+    std::is_same_v<std::decay_t<Op>, Fstat> || std::is_same_v<std::decay_t<Op>, Close> ||
+    std::is_same_v<std::decay_t<Op>, Listen> || std::is_same_v<std::decay_t<Op>, Accept> ||
+    std::is_same_v<std::decay_t<Op>, Send> || std::is_same_v<std::decay_t<Op>, Recv> ||
+    std::is_same_v<std::decay_t<Op>, Timeout>;
 
 /// True when the operation transfers data through the submitted buffer.
 template <typename Op>

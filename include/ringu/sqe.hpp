@@ -33,7 +33,7 @@ enum class IoOp : std::uint8_t {
 /// internal type.
 struct Sqe {
   std::uint8_t opcode = 0;    // IoOp
-  std::int32_t fd = -1;       // target file descriptor (k_at_fdcwd for Open)
+  std::int32_t fd = -1;       // target file descriptor (k_at_fdcwd for open(2)-style OpenAt)
   std::uint64_t off = 0;      // file offset (-1 for the current position)
   std::uint64_t addr = 0;     // buffer / path / timespec pointer
   std::uint64_t addr2 = 0;    // secondary pointer (statx buffer, accept addr_len)
