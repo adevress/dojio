@@ -61,11 +61,19 @@ TEST_CASE("listen then accept over localhost TCP") {
   REQUIRE(lfd >= 0);
   const std::int32_t one = 1;
   ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+  // bind through the reactor (inline Bind operation)
+  bool bound = false;
+  reactor.submit(ringu::Bind::make(ringu::FileDescriptor{lfd}, ringu::Ipv4Endpoint::loopback(0)),
+                 [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+                   REQUIRE(r.has_value());
+                   CHECK(res == 0);
+                   bound = true;
+                 });
+  reactor.process(Mode::Batch);
+  CHECK(bound);
+
   sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = 0;
-  REQUIRE(::bind(lfd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0);
   socklen_t alen = sizeof(addr);
   REQUIRE(::getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
 

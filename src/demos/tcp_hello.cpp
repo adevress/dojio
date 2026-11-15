@@ -60,12 +60,20 @@ int main(int argc, char** argv) {
       const std::int32_t lfd = sock->value();
       const std::int32_t one = 1;
       ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-      sockaddr_in addr{};
-      addr.sin_family = AF_INET;
-      addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-      addr.sin_port = htons(static_cast<std::uint16_t>(base_port + i));
-      if (::bind(lfd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
-        fmt::print(stderr, "server {}: bind: {}\n", i, std::strerror(errno));
+      // bind through the reactor (inline Bind operation)
+      bool bound = false;
+      reactor.submit(ringu::Bind::make(ringu::FileDescriptor{lfd},
+                                       ringu::Ipv4Endpoint::loopback(static_cast<std::uint16_t>(base_port + i))),
+                     [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
+                       if (r.has_value()) {
+                         bound = true;
+                       } else {
+                         fmt::print(stderr, "server {}: bind: {}\n", i, std::get<ringu::IoError>(r.error()).message());
+                       }
+                     });
+      reactor.process(ringu::Reactor::ProcessMode::Batch);
+      if (!bound) {
+        fmt::print(stderr, "server {}: bind failed\n", i);
         std::exit(1);
       }
       // listen through the reactor (inline Listen operation)

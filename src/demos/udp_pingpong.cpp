@@ -26,7 +26,7 @@
 
 namespace {
 
-std::int32_t make_udp_socket(sockaddr_in& bound_addr) {
+std::int32_t make_udp_socket(ringu::Reactor& reactor, sockaddr_in& bound_addr) {
   auto sock = ringu::create_socket(ringu::AddressFamily::Inet, ringu::SocketType::Dgram, ringu::SocketProtocol::Udp);
   if (!sock.has_value()) {
     fmt::print(stderr, "socket: {}\n", std::get<ringu::IoError>(sock.error()).message());
@@ -37,14 +37,21 @@ std::int32_t make_udp_socket(sockaddr_in& bound_addr) {
     std::perror("socket");
     std::exit(1);
   }
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = 0;
-  if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
-    std::perror("bind");
+  // bind through the reactor (inline Bind operation) to an ephemeral loopback port
+  bool bound = false;
+  reactor.submit(ringu::Bind::make(ringu::FileDescriptor{fd}, ringu::Ipv4Endpoint::loopback(0)),
+                 [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
+                   if (r.has_value()) {
+                     bound = true;
+                   } else {
+                     fmt::print(stderr, "bind: {}\n", std::get<ringu::IoError>(r.error()).message());
+                   }
+                 });
+  reactor.process(ringu::Reactor::ProcessMode::Batch);
+  if (!bound) {
     std::exit(1);
   }
+  sockaddr_in addr{};
   socklen_t len = sizeof(addr);
   if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
     std::perror("getsockname");
@@ -60,18 +67,18 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   const std::int32_t iterations = argc > 1 ? static_cast<std::int32_t>(std::atoi(argv[1])) : 10000;
   const std::uint64_t payload_size = argc > 2 ? static_cast<std::uint64_t>(std::atoi(argv[2])) : 64;
 
+  ringu::Reactor reactor{256};
+
   sockaddr_in addr_a{};
   sockaddr_in addr_b{};
-  const std::int32_t a = make_udp_socket(addr_a);
-  const std::int32_t b = make_udp_socket(addr_b);
+  const std::int32_t a = make_udp_socket(reactor, addr_a);
+  const std::int32_t b = make_udp_socket(reactor, addr_b);
   // connect both sockets so the Send/Recv operations can be used
   if (::connect(a, reinterpret_cast<const sockaddr*>(&addr_b), sizeof(addr_b)) != 0 ||
       ::connect(b, reinterpret_cast<const sockaddr*>(&addr_a), sizeof(addr_a)) != 0) {
     std::perror("connect");
     return 1;
   }
-
-  ringu::Reactor reactor{256};
 
   std::vector<std::byte> payload(static_cast<std::size_t>(payload_size));
   std::optional<std::vector<std::byte>> send_a_buf = payload; // a -> b

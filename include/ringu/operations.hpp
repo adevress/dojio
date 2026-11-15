@@ -157,6 +157,28 @@ struct Fsync {
   static Fsync make(FileDescriptor fd, bool use_datasync = false) { return Fsync{fd, use_datasync}; }
 };
 
+/// bind(2) on fd to an IPv4 or IPv6 endpoint. Completes with 0 on success.
+///
+/// No io_uring opcode exists for bind: the Reactor executes it synchronously
+/// when the current batch is processed.
+///
+/// The sockaddr_in / sockaddr_in6 is stored inside the operation (static buffer),
+/// so no C socket type appears in the public API.
+struct Bind {
+  FileDescriptor fd;
+  std::variant<Ipv4Endpoint, Ipv6Endpoint> endpoint;
+  StaticBuffer<k_sockaddr_storage_size> addr{}; // sockaddr_in / sockaddr_in6 storage, filled by the factory
+  std::uint32_t addr_len = 0;                   // filled by the factory
+
+  /// Constructs a Bind operation for an IPv4 endpoint (implemented in the library,
+  /// where the sockaddr_in is built from the endpoint).
+  static Bind make(FileDescriptor fd, Ipv4Endpoint endpoint);
+
+  /// Constructs a Bind operation for an IPv6 endpoint (implemented in the library,
+  /// where the sockaddr_in6 is built from the endpoint).
+  static Bind make(FileDescriptor fd, Ipv6Endpoint endpoint);
+};
+
 /// connect(2) on fd to an IPv4 endpoint. Completes with 0 on success.
 ///
 /// The sockaddr_in is stored inside the operation (static buffer), so no C socket
@@ -187,7 +209,7 @@ struct Timeout {
 /// Variant of every operation supported by the Reactor. Each operation is its own
 /// struct held by this variant.
 using Operation = std::variant<OpenAt, Read, Pread, Write, Pwrite, Lseek, Fstat, Close, Listen, Accept, Send, Recv,
-                               Timeout, Fsync, Connect>;
+                               Timeout, Fsync, Connect, Bind>;
 
 /// True when Op is one of the operation structs of the Operation variant.
 template <typename Op>
@@ -199,7 +221,7 @@ inline constexpr bool is_operation_v =
     std::is_same_v<std::decay_t<Op>, Fstat> || std::is_same_v<std::decay_t<Op>, Close> ||
     std::is_same_v<std::decay_t<Op>, Listen> || std::is_same_v<std::decay_t<Op>, Accept> ||
     std::is_same_v<std::decay_t<Op>, Send> || std::is_same_v<std::decay_t<Op>, Recv> ||
-    std::is_same_v<std::decay_t<Op>, Timeout>;
+    std::is_same_v<std::decay_t<Op>, Timeout> || std::is_same_v<std::decay_t<Op>, Bind>;
 
 /// True when the operation transfers data through the submitted buffer.
 template <typename Op>
@@ -212,6 +234,7 @@ inline constexpr bool uses_buffer_v =
 /// True for the operations that have no io_uring opcode and are therefore executed
 /// synchronously by the Reactor when the current batch is processed.
 template <typename Op>
-inline constexpr bool is_inline_v = std::is_same_v<std::decay_t<Op>, Lseek> || std::is_same_v<std::decay_t<Op>, Listen>;
+inline constexpr bool is_inline_v = std::is_same_v<std::decay_t<Op>, Lseek> ||
+                                    std::is_same_v<std::decay_t<Op>, Listen> || std::is_same_v<std::decay_t<Op>, Bind>;
 
 } // namespace ringu

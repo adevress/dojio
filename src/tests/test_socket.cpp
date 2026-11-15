@@ -61,6 +61,27 @@ TEST_CASE("Ipv4Endpoint parse and loopback") {
   CHECK_FALSE(ringu::Ipv4Endpoint::parse("not_an_ip", 80).has_value());
 }
 
+TEST_CASE("Ipv6Endpoint parse and loopback") {
+  const auto ep = ringu::Ipv6Endpoint::parse("::1", 8080);
+  REQUIRE(ep.has_value());
+  CHECK(ep->port == 8080);
+  for (std::size_t i = 0; i < 15; ++i) {
+    CHECK(ep->address[i] == 0);
+  }
+  CHECK(ep->address[15] == 1);
+  CHECK(ringu::Ipv6Endpoint::loopback(1234).address == ep->address);
+  CHECK(ringu::Ipv6Endpoint::loopback(1234).port == 1234);
+  CHECK_FALSE(ringu::Ipv6Endpoint::parse("not_an_ip", 80).has_value());
+  const auto full = ringu::Ipv6Endpoint::parse("2001:db8::1", 443);
+  REQUIRE(full.has_value());
+  CHECK(full->address[0] == 0x20);
+  CHECK(full->address[1] == 0x01);
+  CHECK(full->address[2] == 0x0d);
+  CHECK(full->address[3] == 0xb8);
+  CHECK(full->address[15] == 1);
+  CHECK(full->port == 443);
+}
+
 TEST_CASE("Connect operation connects to a listening localhost server") {
   ringu::Reactor reactor{64};
   using Mode = ringu::Reactor::ProcessMode;
@@ -70,11 +91,19 @@ TEST_CASE("Connect operation connects to a listening localhost server") {
   const std::int32_t lfd = server->value();
   const std::int32_t one = 1;
   ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+  // bind through the reactor (inline Bind operation)
+  bool bound = false;
+  reactor.submit(ringu::Bind::make(ringu::FileDescriptor{lfd}, ringu::Ipv4Endpoint::loopback(0)),
+                 [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+                   REQUIRE(r.has_value());
+                   CHECK(res == 0);
+                   bound = true;
+                 });
+  reactor.process(Mode::Batch);
+  CHECK(bound);
+
   sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = 0;
-  REQUIRE(::bind(lfd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0);
   socklen_t alen = sizeof(addr);
   REQUIRE(::getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
   const auto port = static_cast<std::uint16_t>(ntohs(addr.sin_port));
@@ -221,4 +250,115 @@ TEST_CASE("OpenAt operation opens a file relative to a dirfd") {
   reactor.process(Mode::Batch);
   ::close(dirfd);
   ::unlink(full.c_str());
+}
+
+TEST_CASE("Bind operation binds a socket to an IPv4 endpoint") {
+  ringu::Reactor reactor{64};
+  using Mode = ringu::Reactor::ProcessMode;
+
+  auto sock = ringu::create_socket(ringu::AddressFamily::Inet, ringu::SocketType::Stream, ringu::SocketProtocol::Tcp);
+  REQUIRE(sock.has_value());
+  const ringu::FileDescriptor fd = *sock;
+
+  bool bound = false;
+  reactor.submit(ringu::Bind::make(fd, ringu::Ipv4Endpoint::loopback(0)),
+                 [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+                   REQUIRE(r.has_value());
+                   CHECK(res == 0);
+                   bound = true;
+                 });
+  reactor.process(Mode::Batch);
+  CHECK(bound);
+
+  // the kernel assigned an ephemeral port on 127.0.0.1
+  sockaddr_in addr{};
+  socklen_t alen = sizeof(addr);
+  REQUIRE(::getsockname(fd.value(), reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
+  CHECK(addr.sin_family == AF_INET);
+  CHECK(addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+  CHECK(ntohs(addr.sin_port) != 0);
+
+  // another socket binding the same endpoint fails with EADDRINUSE
+  auto sock2 = ringu::create_socket(ringu::AddressFamily::Inet, ringu::SocketType::Stream, ringu::SocketProtocol::Tcp);
+  REQUIRE(sock2.has_value());
+  bool failed = false;
+  reactor.submit(ringu::Bind::make(*sock2, ringu::Ipv4Endpoint::loopback(ntohs(addr.sin_port))),
+                 [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
+                   CHECK_FALSE(r.has_value());
+                   REQUIRE(std::holds_alternative<ringu::IoError>(r.error()));
+                   CHECK(std::get<ringu::IoError>(r.error()).value == -EADDRINUSE);
+                   failed = true;
+                 });
+  reactor.process(Mode::Batch);
+  CHECK(failed);
+
+  reactor.submit(ringu::Close::make(*sock2), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::Close::make(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.process(Mode::Batch);
+}
+
+TEST_CASE("Bind and Listen operations work over IPv6") {
+  ringu::Reactor reactor{64};
+  using Mode = ringu::Reactor::ProcessMode;
+
+  auto sock = ringu::create_socket(ringu::AddressFamily::Inet6, ringu::SocketType::Stream, ringu::SocketProtocol::Tcp);
+  REQUIRE(sock.has_value());
+  const ringu::FileDescriptor fd = *sock;
+
+  bool bound = false;
+  reactor.submit(ringu::Bind::make(fd, ringu::Ipv6Endpoint::loopback(0)),
+                 [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+                   REQUIRE(r.has_value());
+                   CHECK(res == 0);
+                   bound = true;
+                 });
+  reactor.process(Mode::Batch);
+  CHECK(bound);
+
+  // the kernel assigned an ephemeral port on [::1]
+  sockaddr_in6 addr{};
+  socklen_t alen = sizeof(addr);
+  REQUIRE(::getsockname(fd.value(), reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
+  CHECK(addr.sin6_family == AF_INET6);
+  CHECK(addr.sin6_addr.s6_addr[15] == 1);
+  CHECK(ntohs(addr.sin6_port) != 0);
+
+  bool listened = false;
+  reactor.submit(ringu::Listen::make(fd, 16), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+    REQUIRE(r.has_value());
+    CHECK(res == 0);
+    listened = true;
+  });
+  reactor.process(Mode::Batch);
+  CHECK(listened);
+
+  // raw blocking connect over IPv6, then accept through the reactor
+  const std::int32_t cfd = static_cast<std::int32_t>(::socket(AF_INET6, SOCK_STREAM, 0));
+  REQUIRE(cfd >= 0);
+  sockaddr_in6 caddr{};
+  caddr.sin6_family = AF_INET6;
+  caddr.sin6_addr = addr.sin6_addr;
+  caddr.sin6_port = addr.sin6_port;
+  REQUIRE(::connect(cfd, reinterpret_cast<const sockaddr*>(&caddr), sizeof(caddr)) == 0);
+
+  ringu::FileDescriptor accepted{-1};
+  reactor.submit(ringu::Accept::make(fd), ringu::AcceptBuffer{},
+                 [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
+                   REQUIRE(r.has_value());
+                   CHECK(res >= 0);
+                   accepted = *r;
+                 });
+  reactor.process(Mode::Batch);
+  REQUIRE(accepted.value() >= 0);
+
+  sockaddr_in6 peer{};
+  socklen_t plen = sizeof(peer);
+  REQUIRE(::getpeername(accepted.value(), reinterpret_cast<sockaddr*>(&peer), &plen) == 0);
+  CHECK(peer.sin6_family == AF_INET6);
+  CHECK(peer.sin6_addr.s6_addr[15] == 1);
+
+  reactor.submit(ringu::Close::make(accepted), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::Close::make(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.process(Mode::Batch);
+  ::close(cfd);
 }

@@ -92,6 +92,44 @@ Result<Ipv4Endpoint> Ipv4Endpoint::parse(std::string_view ip, std::uint16_t port
   return Ipv4Endpoint{static_cast<std::uint32_t>(ntohl(addr.s_addr)), port};
 }
 
+Result<Ipv6Endpoint> Ipv6Endpoint::parse(std::string_view ip, std::uint16_t port) {
+  const std::string ip_str{ip};
+  Ipv6Endpoint ep{};
+  ep.port = port;
+  if (::inet_pton(AF_INET6, ip_str.c_str(), ep.address.data()) != 1) {
+    return tl::unexpected(IoError{-EINVAL});
+  }
+  return ep;
+}
+
+Bind Bind::make(FileDescriptor fd, Ipv4Endpoint endpoint) {
+  Bind op{};
+  op.fd = fd;
+  op.endpoint = endpoint;
+  sockaddr_in sa{};
+  sa.sin_family = AF_INET;
+  sa.sin_addr.s_addr = htonl(endpoint.address);
+  sa.sin_port = htons(endpoint.port);
+  static_assert(sizeof(sa) <= k_sockaddr_storage_size);
+  std::memcpy(op.addr.data(), &sa, sizeof(sa));
+  op.addr_len = static_cast<std::uint32_t>(sizeof(sa));
+  return op;
+}
+
+Bind Bind::make(FileDescriptor fd, Ipv6Endpoint endpoint) {
+  Bind op{};
+  op.fd = fd;
+  op.endpoint = endpoint;
+  sockaddr_in6 sa{};
+  sa.sin6_family = AF_INET6;
+  std::memcpy(&sa.sin6_addr, endpoint.address.data(), sizeof(sa.sin6_addr));
+  sa.sin6_port = htons(endpoint.port);
+  static_assert(sizeof(sa) <= k_sockaddr_storage_size);
+  std::memcpy(op.addr.data(), &sa, sizeof(sa));
+  op.addr_len = static_cast<std::uint32_t>(sizeof(sa));
+  return op;
+}
+
 Connect Connect::make(FileDescriptor fd, Ipv4Endpoint endpoint) {
   Connect op{};
   op.fd = fd;

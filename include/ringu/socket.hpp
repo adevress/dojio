@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string_view>
 
@@ -51,6 +52,8 @@ Result<FileDescriptor> create_socket(AddressFamily family, SocketType type,
 
 /// Size of a sockaddr_in on Linux; used as the address storage of the Connect operation.
 inline constexpr std::uint64_t k_sockaddr_in_size = 16;
+/// Size of a sockaddr_in6 on Linux.
+inline constexpr std::uint64_t k_sockaddr_in6_size = 28;
 
 /// An IPv4 endpoint: address and port in host byte order.
 struct Ipv4Endpoint {
@@ -62,6 +65,24 @@ struct Ipv4Endpoint {
 
   /// Parses a dotted-quad IPv4 address (e.g. "127.0.0.1") with a port, both in host byte order.
   static Result<Ipv4Endpoint> parse(std::string_view ip, std::uint16_t port);
+};
+
+/// An IPv6 endpoint: the 16 address bytes (as produced by inet_pton, i.e. network
+/// order) and the port in host byte order.
+struct Ipv6Endpoint {
+  std::array<std::uint8_t, 16> address{};
+  std::uint16_t port = 0;
+
+  /// [::1]:port
+  static constexpr Ipv6Endpoint loopback(std::uint16_t port) {
+    Ipv6Endpoint ep{};
+    ep.address[15] = 1;
+    ep.port = port;
+    return ep;
+  }
+
+  /// Parses an IPv6 address (e.g. "::1") with a port in host byte order.
+  static Result<Ipv6Endpoint> parse(std::string_view ip, std::uint16_t port);
 };
 
 } // namespace ringu

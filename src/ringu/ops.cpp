@@ -31,6 +31,14 @@ std::int32_t listen_fd(std::int32_t fd, std::int32_t backlog) {
   return 0;
 }
 
+std::int32_t bind_fd(std::int32_t fd, const void* addr, std::uint32_t addr_len) {
+  // bind(2) uses socklen_t (C ABI boundary)
+  if (::bind(fd, reinterpret_cast<const sockaddr*>(addr), static_cast<socklen_t>(addr_len)) != 0) {
+    return -errno;
+  }
+  return 0;
+}
+
 void statx_to_stat(std::byte* data, std::uint64_t size) {
   if (size < static_cast<std::uint64_t>(sizeof(struct statx))) {
     return;

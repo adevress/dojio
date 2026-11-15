@@ -26,6 +26,8 @@ namespace detail {
 std::int32_t lseek_fd(std::int32_t fd, std::int64_t offset, std::int32_t whence);
 /// listen(2) wrapper returning the raw result code (negated errno on failure).
 std::int32_t listen_fd(std::int32_t fd, std::int32_t backlog);
+/// bind(2) wrapper returning the raw result code (negated errno on failure).
+std::int32_t bind_fd(std::int32_t fd, const void* addr, std::uint32_t addr_len);
 /// Rewrites the first sizeof(struct stat) bytes of a statx-filled buffer as a struct stat.
 void statx_to_stat(std::byte* data, std::uint64_t size);
 
@@ -64,6 +66,9 @@ template <typename Buffer> struct result_value<Close, Buffer> {
   using type = std::int32_t;
 };
 template <typename Buffer> struct result_value<Listen, Buffer> {
+  using type = std::int32_t;
+};
+template <typename Buffer> struct result_value<Bind, Buffer> {
   using type = std::int32_t;
 };
 template <typename Buffer> struct result_value<Timeout, Buffer> {
@@ -137,8 +142,10 @@ public:
       return detail::lseek_fd(op_.fd.value(), op_.offset, op_.whence);
     } else if constexpr (std::is_same_v<Op, Listen>) {
       return detail::listen_fd(op_.fd.value(), op_.backlog);
+    } else if constexpr (std::is_same_v<Op, Bind>) {
+      return detail::bind_fd(op_.fd.value(), op_.addr.data(), op_.addr_len);
     } else {
-      // only Lseek and Listen are inline operations; anything else reaching here is a bug
+      // only Lseek, Listen and Bind are inline operations; anything else reaching here is a bug
       unreachable();
     }
   }
@@ -255,7 +262,7 @@ private:
       sqe.len = 1;
       sqe.op_flags = 0;
     }
-    // Lseek and Listen have no io_uring opcode: they are executed inline.
+    // Lseek, Listen and Bind have no io_uring opcode: they are executed inline.
   }
 
   Value make_value(std::int32_t res) {
