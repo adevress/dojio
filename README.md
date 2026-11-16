@@ -1,6 +1,8 @@
 # ringu
 
-[![CI](https://img.shields.io/github/actions/workflow/status/adevress/ringu/ci.yml?branch=main&label=CI)](https://github.com/adevress/ringu/actions/workflows/ci.yml)
+[![gcc](https://img.shields.io/github/check-runs/adevress/ringu/main?nameFilter=gcc%20build%20%2B%20tests%20%2B%20benches&label=gcc)](https://github.com/adevress/ringu/actions/workflows/ci.yml)
+[![clang](https://img.shields.io/github/check-runs/adevress/ringu/main?nameFilter=clang%20build%20%2B%20tests%20%2B%20benches&label=clang)](https://github.com/adevress/ringu/actions/workflows/ci.yml)
+[![format](https://img.shields.io/github/check-runs/adevress/ringu/main?nameFilter=nix-format%20check&label=format)](https://github.com/adevress/ringu/actions/workflows/ci.yml)
 
 A high-performance io_uring interface for modern C++20.
 
