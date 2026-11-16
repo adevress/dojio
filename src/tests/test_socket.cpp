@@ -94,7 +94,7 @@ TEST_CASE("Connect operation connects to a listening localhost server") {
 
   // bind through the reactor (inline Bind operation)
   bool bound = false;
-  reactor.submit(ringu::Bind::make(ringu::FileDescriptor{lfd}, ringu::Ipv4Endpoint::loopback(0)),
+  reactor.submit(ringu::bind(ringu::FileDescriptor{lfd}, ringu::Ipv4Endpoint::loopback(0)),
                  [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 0);
@@ -108,7 +108,7 @@ TEST_CASE("Connect operation connects to a listening localhost server") {
   REQUIRE(::getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
   const auto port = static_cast<std::uint16_t>(ntohs(addr.sin_port));
 
-  reactor.submit(ringu::Listen::make(ringu::FileDescriptor{lfd}, 16),
+  reactor.submit(ringu::listen(ringu::FileDescriptor{lfd}, 16),
                  [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
   reactor.process(Mode::Batch);
 
@@ -117,7 +117,7 @@ TEST_CASE("Connect operation connects to a listening localhost server") {
   const std::int32_t cfd = client->value();
 
   bool connected = false;
-  reactor.submit(ringu::Connect::make(ringu::FileDescriptor{cfd}, ringu::Ipv4Endpoint::loopback(port)),
+  reactor.submit(ringu::connect(ringu::FileDescriptor{cfd}, ringu::Ipv4Endpoint::loopback(port)),
                  [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 0);
@@ -128,7 +128,7 @@ TEST_CASE("Connect operation connects to a listening localhost server") {
 
   // the server side accepts the connection
   ringu::FileDescriptor accepted{-1};
-  reactor.submit(ringu::Accept::make(ringu::FileDescriptor{lfd}), ringu::AcceptBuffer{},
+  reactor.submit(ringu::accept(ringu::FileDescriptor{lfd}), ringu::AcceptBuffer{},
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res >= 0);
@@ -139,12 +139,12 @@ TEST_CASE("Connect operation connects to a listening localhost server") {
 
   // data flows over the ring-connected socket
   std::string received;
-  reactor.submit(ringu::Recv::make(accepted), std::vector<std::byte>(16),
+  reactor.submit(ringu::recv(accepted), std::vector<std::byte>(16),
                  [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t) {
                    REQUIRE(r.has_value());
                    received = to_string(*r);
                  });
-  reactor.submit(ringu::Send::make(ringu::FileDescriptor{cfd}), to_bytes("ring-connect"),
+  reactor.submit(ringu::send(ringu::FileDescriptor{cfd}), to_bytes("ring-connect"),
                  [](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 12);
@@ -152,8 +152,8 @@ TEST_CASE("Connect operation connects to a listening localhost server") {
   reactor.process(Mode::Batch);
   CHECK(received == "ring-connect");
 
-  reactor.submit(ringu::Close::make(accepted), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
-  reactor.submit(ringu::Close::make(ringu::FileDescriptor{cfd}),
+  reactor.submit(ringu::close(accepted), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::close(ringu::FileDescriptor{cfd}),
                  [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
   reactor.process(Mode::Batch);
   ::close(lfd);
@@ -165,7 +165,7 @@ TEST_CASE("Connect to a closed port fails with ECONNREFUSED") {
   REQUIRE(client.has_value());
   // port 1 on loopback is not listening
   bool called = false;
-  reactor.submit(ringu::Connect::make(*client, ringu::Ipv4Endpoint::loopback(1)),
+  reactor.submit(ringu::connect(*client, ringu::Ipv4Endpoint::loopback(1)),
                  [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
                    called = true;
                    CHECK_FALSE(r.has_value());
@@ -186,7 +186,7 @@ TEST_CASE("Fsync operation syncs a file") {
   REQUIRE(::write(fd, "data", 4) == 4);
 
   bool synced = false;
-  reactor.submit(ringu::Fsync::make(ringu::FileDescriptor{fd}),
+  reactor.submit(ringu::fsync(ringu::FileDescriptor{fd}),
                  [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 0);
@@ -196,7 +196,7 @@ TEST_CASE("Fsync operation syncs a file") {
   CHECK(synced);
 
   bool datasync_ok = false;
-  reactor.submit(ringu::Fsync::make(ringu::FileDescriptor{fd}, true),
+  reactor.submit(ringu::fsync(ringu::FileDescriptor{fd}, true),
                  [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 0);
@@ -205,7 +205,7 @@ TEST_CASE("Fsync operation syncs a file") {
   reactor.process(Mode::Batch);
   CHECK(datasync_ok);
 
-  reactor.submit(ringu::Close::make(ringu::FileDescriptor{fd}),
+  reactor.submit(ringu::close(ringu::FileDescriptor{fd}),
                  [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
   reactor.process(Mode::Batch);
   ::unlink(path.c_str());
@@ -227,7 +227,7 @@ TEST_CASE("OpenAt operation opens a file relative to a dirfd") {
   REQUIRE(dirfd >= 0);
 
   ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::OpenAt::make(ringu::FileDescriptor{dirfd}, name, O_RDONLY),
+  reactor.submit(ringu::open_at(ringu::FileDescriptor{dirfd}, name, O_RDONLY),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res >= 0);
@@ -237,7 +237,7 @@ TEST_CASE("OpenAt operation opens a file relative to a dirfd") {
   REQUIRE(fd.value() >= 0);
 
   std::string content;
-  reactor.submit(ringu::Pread::make(fd, 0), std::vector<std::byte>(64),
+  reactor.submit(ringu::pread(fd, 0), std::vector<std::byte>(64),
                  [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 14);
@@ -246,7 +246,7 @@ TEST_CASE("OpenAt operation opens a file relative to a dirfd") {
   reactor.process(Mode::Batch);
   CHECK(content == "openat-content");
 
-  reactor.submit(ringu::Close::make(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
   reactor.process(Mode::Batch);
   ::close(dirfd);
   ::unlink(full.c_str());
@@ -261,7 +261,7 @@ TEST_CASE("Bind operation binds a socket to an IPv4 endpoint") {
   const ringu::FileDescriptor fd = *sock;
 
   bool bound = false;
-  reactor.submit(ringu::Bind::make(fd, ringu::Ipv4Endpoint::loopback(0)),
+  reactor.submit(ringu::bind(fd, ringu::Ipv4Endpoint::loopback(0)),
                  [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 0);
@@ -282,7 +282,7 @@ TEST_CASE("Bind operation binds a socket to an IPv4 endpoint") {
   auto sock2 = ringu::create_socket(ringu::AddressFamily::Inet, ringu::SocketType::Stream, ringu::SocketProtocol::Tcp);
   REQUIRE(sock2.has_value());
   bool failed = false;
-  reactor.submit(ringu::Bind::make(*sock2, ringu::Ipv4Endpoint::loopback(ntohs(addr.sin_port))),
+  reactor.submit(ringu::bind(*sock2, ringu::Ipv4Endpoint::loopback(ntohs(addr.sin_port))),
                  [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
                    CHECK_FALSE(r.has_value());
                    REQUIRE(std::holds_alternative<ringu::IoError>(r.error()));
@@ -292,8 +292,8 @@ TEST_CASE("Bind operation binds a socket to an IPv4 endpoint") {
   reactor.process(Mode::Batch);
   CHECK(failed);
 
-  reactor.submit(ringu::Close::make(*sock2), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
-  reactor.submit(ringu::Close::make(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::close(*sock2), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
   reactor.process(Mode::Batch);
 }
 
@@ -306,7 +306,7 @@ TEST_CASE("Bind and Listen operations work over IPv6") {
   const ringu::FileDescriptor fd = *sock;
 
   bool bound = false;
-  reactor.submit(ringu::Bind::make(fd, ringu::Ipv6Endpoint::loopback(0)),
+  reactor.submit(ringu::bind(fd, ringu::Ipv6Endpoint::loopback(0)),
                  [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 0);
@@ -324,7 +324,7 @@ TEST_CASE("Bind and Listen operations work over IPv6") {
   CHECK(ntohs(addr.sin6_port) != 0);
 
   bool listened = false;
-  reactor.submit(ringu::Listen::make(fd, 16), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+  reactor.submit(ringu::listen(fd, 16), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
     REQUIRE(r.has_value());
     CHECK(res == 0);
     listened = true;
@@ -342,7 +342,7 @@ TEST_CASE("Bind and Listen operations work over IPv6") {
   REQUIRE(::connect(cfd, reinterpret_cast<const sockaddr*>(&caddr), sizeof(caddr)) == 0);
 
   ringu::FileDescriptor accepted{-1};
-  reactor.submit(ringu::Accept::make(fd), ringu::AcceptBuffer{},
+  reactor.submit(ringu::accept(fd), ringu::AcceptBuffer{},
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res >= 0);
@@ -357,8 +357,8 @@ TEST_CASE("Bind and Listen operations work over IPv6") {
   CHECK(peer.sin6_family == AF_INET6);
   CHECK(peer.sin6_addr.s6_addr[15] == 1);
 
-  reactor.submit(ringu::Close::make(accepted), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
-  reactor.submit(ringu::Close::make(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::close(accepted), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
   reactor.process(Mode::Batch);
   ::close(cfd);
 }

@@ -92,7 +92,7 @@ TEST_CASE("RegisteredBuffer is usable as an io_uring fixed buffer for read") {
     ::close(fd);
   }
   ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::OpenAt::make(path, O_RDONLY, 0),
+  reactor.submit(ringu::open_at(path, O_RDONLY, 0),
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
                    REQUIRE(r.has_value());
                    fd = *r;
@@ -102,7 +102,7 @@ TEST_CASE("RegisteredBuffer is usable as an io_uring fixed buffer for read") {
 
   ringu::RegisteredMemoryPool pool{reactor.ring(), 4096, 4};
   std::vector<std::byte> out;
-  reactor.submit(ringu::Pread::make(fd, 0), pool.borrow(),
+  reactor.submit(ringu::pread(fd, 0), pool.borrow(),
                  [&](ringu::Result<ringu::RegisteredBuffer> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 20);
@@ -114,7 +114,7 @@ TEST_CASE("RegisteredBuffer is usable as an io_uring fixed buffer for read") {
   CHECK(std::memcmp(out.data(), "fixed-buffer-content", 20) == 0);
   CHECK(reactor.count_operations(ringu::Reactor::OperationState::Completed) == 2);
 
-  reactor.submit(ringu::Close::make(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
   reactor.process(ringu::Reactor::ProcessMode::Batch);
   ::unlink(path.c_str());
 }

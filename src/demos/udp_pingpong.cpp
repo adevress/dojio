@@ -39,7 +39,7 @@ std::int32_t make_udp_socket(ringu::Reactor& reactor, sockaddr_in& bound_addr) {
   }
   // bind through the reactor (inline Bind operation) to an ephemeral loopback port
   bool bound = false;
-  reactor.submit(ringu::Bind::make(ringu::FileDescriptor{fd}, ringu::Ipv4Endpoint::loopback(0)),
+  reactor.submit(ringu::bind(ringu::FileDescriptor{fd}, ringu::Ipv4Endpoint::loopback(0)),
                  [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
                    if (r.has_value()) {
                      bound = true;
@@ -100,7 +100,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   std::function<void()> submit_send_b;
 
   submit_recv_b = [&] {
-    recv_b_id = reactor.submit(ringu::Recv::make(ringu::FileDescriptor{b}), std::move(*recv_b_buf),
+    recv_b_id = reactor.submit(ringu::recv(ringu::FileDescriptor{b}), std::move(*recv_b_buf),
                                [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                                  if (!r.has_value() || res <= 0) {
                                    reactor.request_stop();
@@ -113,7 +113,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   };
 
   submit_send_b = [&] {
-    reactor.submit(ringu::Send::make(ringu::FileDescriptor{b}), std::move(*send_b_buf),
+    reactor.submit(ringu::send(ringu::FileDescriptor{b}), std::move(*send_b_buf),
                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                      if (!r.has_value() || res <= 0) {
                        reactor.request_stop();
@@ -128,7 +128,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
     t_send_a = std::chrono::steady_clock::now();
     const std::uint64_t seq = static_cast<std::uint64_t>(round_trips);
     std::memcpy(send_a_buf->data(), &seq, sizeof(seq));
-    reactor.submit(ringu::Send::make(ringu::FileDescriptor{a}), std::move(*send_a_buf),
+    reactor.submit(ringu::send(ringu::FileDescriptor{a}), std::move(*send_a_buf),
                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                      if (!r.has_value() || res <= 0) {
                        reactor.request_stop();
@@ -139,7 +139,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   };
 
   submit_recv_a = [&] {
-    reactor.submit(ringu::Recv::make(ringu::FileDescriptor{a}), std::move(*recv_a_buf),
+    reactor.submit(ringu::recv(ringu::FileDescriptor{a}), std::move(*recv_a_buf),
                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                      if (!r.has_value() || res <= 0) {
                        reactor.request_stop();

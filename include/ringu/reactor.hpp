@@ -67,7 +67,7 @@ public:
     static_assert(is_operation_v<Op>, "Op must be one of the ringu operation structs");
     static_assert(BufferLike<Buffer>, "Buffer must be a std::vector, std::array or RegisteredBuffer");
     static_assert(uses_buffer_v<Op>, "this operation does not take a buffer; use submit(op, callback)");
-    if constexpr (std::is_same_v<Op, Fstat>) {
+    if constexpr (std::is_same_v<Op, FstatOp>) {
       enforce_precondition(buffer.size() * sizeof(typename Buffer::value_type) >= k_statx_size);
     }
     return do_submit(std::move(op), std::move(buffer), std::move(callback), false);
@@ -76,7 +76,7 @@ public:
   /// Submits op without a buffer.
   template <typename Op, typename Callback> OperationId submit(Op op, Callback callback) {
     static_assert(is_operation_v<Op>, "Op must be one of the ringu operation structs");
-    static_assert(!uses_buffer_v<Op> || std::is_same_v<Op, Accept>,
+    static_assert(!uses_buffer_v<Op> || std::is_same_v<Op, AcceptOp>,
                   "this operation requires a buffer; use submit(op, buffer, callback)");
     return do_submit(std::move(op), std::monostate{}, std::move(callback), false);
   }
@@ -84,11 +84,7 @@ public:
   /// Arms a timer: the action completes successfully once the duration has elapsed.
   template <typename Callback> OperationId submit(Timer timer, Callback callback) {
     enforce_precondition(timer.duration() >= Timer::Duration{0});
-    Timeout op{};
-    const std::int64_t ns = timer.duration().count();
-    op.ts.sec = ns / 1000000000LL;
-    op.ts.nsec = ns % 1000000000LL;
-    return do_submit(std::move(op), std::monostate{}, std::move(callback), true);
+    return do_submit(timeout(timer.duration()), std::monostate{}, std::move(callback), true);
   }
 
   /// Cancels a pending operation. The operation completes with the Cancelled error

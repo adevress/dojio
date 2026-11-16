@@ -47,31 +47,31 @@ concept BufferLike = requires(T& t) {
 template <typename Op, typename Buffer> struct result_value {
   using type = Buffer;
 };
-template <typename Buffer> struct result_value<Accept, Buffer> {
+template <typename Buffer> struct result_value<AcceptOp, Buffer> {
   using type = FileDescriptor;
 };
-template <typename Buffer> struct result_value<OpenAt, Buffer> {
+template <typename Buffer> struct result_value<OpenAtOp, Buffer> {
   using type = FileDescriptor;
 };
-template <typename Buffer> struct result_value<Fsync, Buffer> {
+template <typename Buffer> struct result_value<FsyncOp, Buffer> {
   using type = std::int32_t;
 };
-template <typename Buffer> struct result_value<Connect, Buffer> {
+template <typename Buffer> struct result_value<ConnectOp, Buffer> {
   using type = std::int32_t;
 };
-template <typename Buffer> struct result_value<Lseek, Buffer> {
+template <typename Buffer> struct result_value<LseekOp, Buffer> {
   using type = std::int64_t;
 };
-template <typename Buffer> struct result_value<Close, Buffer> {
+template <typename Buffer> struct result_value<CloseOp, Buffer> {
   using type = std::int32_t;
 };
-template <typename Buffer> struct result_value<Listen, Buffer> {
+template <typename Buffer> struct result_value<ListenOp, Buffer> {
   using type = std::int32_t;
 };
-template <typename Buffer> struct result_value<Bind, Buffer> {
+template <typename Buffer> struct result_value<BindOp, Buffer> {
   using type = std::int32_t;
 };
-template <typename Buffer> struct result_value<Timeout, Buffer> {
+template <typename Buffer> struct result_value<TimeoutOp, Buffer> {
   using type = std::monostate;
 };
 template <typename Op, typename Buffer> using result_value_t = typename result_value<Op, Buffer>::type;
@@ -138,14 +138,14 @@ public:
   [[nodiscard]] bool is_inline() const override { return is_inline_v<Op>; }
 
   std::int32_t execute_inline() override {
-    if constexpr (std::is_same_v<Op, Lseek>) {
+    if constexpr (std::is_same_v<Op, LseekOp>) {
       return detail::lseek_fd(op_.fd.value(), op_.offset, op_.whence);
-    } else if constexpr (std::is_same_v<Op, Listen>) {
+    } else if constexpr (std::is_same_v<Op, ListenOp>) {
       return detail::listen_fd(op_.fd.value(), op_.backlog);
-    } else if constexpr (std::is_same_v<Op, Bind>) {
+    } else if constexpr (std::is_same_v<Op, BindOp>) {
       return detail::bind_fd(op_.fd.value(), op_.addr.data(), op_.addr_len);
     } else {
-      // only Lseek, Listen and Bind are inline operations; anything else reaching here is a bug
+      // only lseek, listen and bind are inline operations; anything else reaching here is a bug
       unreachable();
     }
   }
@@ -161,7 +161,7 @@ public:
       invoke(Result<Value>(tl::unexpected(IoError{res})), res);
       return;
     }
-    if constexpr (std::is_same_v<Op, Fstat>) {
+    if constexpr (std::is_same_v<Op, FstatOp>) {
       detail::statx_to_stat(reinterpret_cast<std::byte*>(buffer_.data()), buffer_bytes());
     }
     invoke(Result<Value>(make_value(res)), res);
@@ -183,39 +183,39 @@ private:
   }
 
   void fill_sqe(Sqe& sqe) {
-    if constexpr (std::is_same_v<Op, OpenAt>) {
+    if constexpr (std::is_same_v<Op, OpenAtOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::OpenAt);
       sqe.fd = op_.dirfd.value();
       sqe.addr = reinterpret_cast<std::uint64_t>(op_.path.c_str());
       sqe.op_flags = static_cast<std::uint32_t>(op_.flags);
       sqe.len = op_.mode;
-    } else if constexpr (std::is_same_v<Op, Read> || std::is_same_v<Op, Pread>) {
+    } else if constexpr (std::is_same_v<Op, ReadOp> || std::is_same_v<Op, PreadOp>) {
       if constexpr (std::is_same_v<Buffer, RegisteredBuffer>) {
         sqe.opcode = static_cast<std::uint8_t>(IoOp::ReadFixed);
       } else {
         sqe.opcode = static_cast<std::uint8_t>(IoOp::Read);
       }
       sqe.fd = op_.fd.value();
-      if constexpr (std::is_same_v<Op, Pread>) {
+      if constexpr (std::is_same_v<Op, PreadOp>) {
         sqe.off = op_.offset;
       } else {
         sqe.off = ~static_cast<std::uint64_t>(0); // current file position
       }
       set_buffer(sqe, std::is_same_v<Buffer, RegisteredBuffer>);
-    } else if constexpr (std::is_same_v<Op, Write> || std::is_same_v<Op, Pwrite>) {
+    } else if constexpr (std::is_same_v<Op, WriteOp> || std::is_same_v<Op, PwriteOp>) {
       if constexpr (std::is_same_v<Buffer, RegisteredBuffer>) {
         sqe.opcode = static_cast<std::uint8_t>(IoOp::WriteFixed);
       } else {
         sqe.opcode = static_cast<std::uint8_t>(IoOp::Write);
       }
       sqe.fd = op_.fd.value();
-      if constexpr (std::is_same_v<Op, Pwrite>) {
+      if constexpr (std::is_same_v<Op, PwriteOp>) {
         sqe.off = op_.offset;
       } else {
         sqe.off = ~static_cast<std::uint64_t>(0); // current file position
       }
       set_buffer(sqe, std::is_same_v<Buffer, RegisteredBuffer>);
-    } else if constexpr (std::is_same_v<Op, Fstat>) {
+    } else if constexpr (std::is_same_v<Op, FstatOp>) {
       static const char k_empty_path[] = "";
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Statx);
       sqe.fd = op_.fd.value();
@@ -223,19 +223,19 @@ private:
       sqe.addr2 = reinterpret_cast<std::uint64_t>(buffer_.data());
       sqe.len = k_statx_basic_stats;
       sqe.op_flags = k_at_empty_path;
-    } else if constexpr (std::is_same_v<Op, Fsync>) {
+    } else if constexpr (std::is_same_v<Op, FsyncOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Fsync);
       sqe.fd = op_.fd.value();
       sqe.op_flags = op_.use_datasync ? k_fsync_datasync : 0;
-    } else if constexpr (std::is_same_v<Op, Connect>) {
+    } else if constexpr (std::is_same_v<Op, ConnectOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Connect);
       sqe.fd = op_.fd.value();
       sqe.addr = reinterpret_cast<std::uint64_t>(op_.addr.data());
       sqe.addr2 = k_sockaddr_in_size;
-    } else if constexpr (std::is_same_v<Op, Close>) {
+    } else if constexpr (std::is_same_v<Op, CloseOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Close);
       sqe.fd = op_.fd.value();
-    } else if constexpr (std::is_same_v<Op, Accept>) {
+    } else if constexpr (std::is_same_v<Op, AcceptOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Accept);
       sqe.fd = op_.fd.value();
       sqe.op_flags = static_cast<std::uint32_t>(op_.flags);
@@ -246,29 +246,29 @@ private:
         sqe.addr = reinterpret_cast<std::uint64_t>(buffer_.data());
         sqe.addr2 = reinterpret_cast<std::uint64_t>(&op_.addr_len);
       }
-    } else if constexpr (std::is_same_v<Op, Send>) {
+    } else if constexpr (std::is_same_v<Op, SendOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Send);
       sqe.fd = op_.fd.value();
       sqe.op_flags = static_cast<std::uint32_t>(op_.flags);
       set_buffer(sqe, false);
-    } else if constexpr (std::is_same_v<Op, Recv>) {
+    } else if constexpr (std::is_same_v<Op, RecvOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Recv);
       sqe.fd = op_.fd.value();
       sqe.op_flags = static_cast<std::uint32_t>(op_.flags);
       set_buffer(sqe, false);
-    } else if constexpr (std::is_same_v<Op, Timeout>) {
+    } else if constexpr (std::is_same_v<Op, TimeoutOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Timeout);
       sqe.addr = reinterpret_cast<std::uint64_t>(&op_.ts);
       sqe.len = 1;
       sqe.op_flags = 0;
     }
-    // Lseek, Listen and Bind have no io_uring opcode: they are executed inline.
+    // lseek, listen and bind have no io_uring opcode: they are executed inline.
   }
 
   Value make_value(std::int32_t res) {
     if constexpr (std::is_same_v<Value, Buffer>) {
       // shrink read-like buffers to the number of bytes actually transferred
-      if constexpr (std::is_same_v<Op, Read> || std::is_same_v<Op, Pread> || std::is_same_v<Op, Recv>) {
+      if constexpr (std::is_same_v<Op, ReadOp> || std::is_same_v<Op, PreadOp> || std::is_same_v<Op, RecvOp>) {
         if constexpr (requires { buffer_.resize(static_cast<std::size_t>(res)); }) {
           if (res >= 0) {
             buffer_.resize(static_cast<std::size_t>(res));

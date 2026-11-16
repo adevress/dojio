@@ -21,126 +21,139 @@ inline constexpr std::uint64_t k_statx_size = 256;
 
 /// Opens path with flags/mode (openat(2) semantics; open(2) when dirfd is AT_FDCWD).
 /// Completes with the new FileDescriptor.
-struct OpenAt {
+struct OpenAtOp {
   FileDescriptor dirfd{k_at_fdcwd};
   std::string path;
   std::int32_t flags = 0;
   std::uint32_t mode = 0;
-
-  /// Constructs an OpenAt operation with open(2) semantics (path relative to the
-  /// current working directory).
-  static OpenAt make(std::string path, std::int32_t flags, std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
-    return OpenAt{FileDescriptor{k_at_fdcwd}, std::move(path), flags, mode};
-  }
-
-  /// Constructs an OpenAt operation with openat(2) semantics (path relative to dirfd).
-  static OpenAt make(FileDescriptor dirfd, std::string path, std::int32_t flags,
-                     std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
-    return OpenAt{dirfd, std::move(path), flags, mode};
-  }
 };
+
+/// Constructs an OpenAtOp operation with open(2) semantics (path relative to the
+/// current working directory).
+inline OpenAtOp open_at(std::string path, std::int32_t flags, std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
+  return OpenAtOp{FileDescriptor{k_at_fdcwd}, std::move(path), flags, mode};
+}
+
+/// Constructs an OpenAtOp operation with openat(2) semantics (path relative to dirfd).
+inline OpenAtOp open_at(FileDescriptor dirfd, std::string path, std::int32_t flags,
+                        std::uint32_t mode = static_cast<std::uint32_t>(0644)) {
+  return OpenAtOp{dirfd, std::move(path), flags, mode};
+}
 
 /// Reads from fd at the current file position (read(2) semantics). The buffer
 /// receives the data; on success it is shrunk to the number of bytes read.
-struct Read {
+struct ReadOp {
   FileDescriptor fd;
-  /// Constructs a Read operation (read at the current file position).
-  static Read make(FileDescriptor fd) { return Read{fd}; }
 };
+
+/// Constructs a ReadOp operation (read at the current file position).
+inline ReadOp read(FileDescriptor fd) { return ReadOp{fd}; }
 
 /// Reads from fd at an explicit offset (pread(2) semantics). The buffer receives
 /// the data; on success it is shrunk to the number of bytes read.
-struct Pread {
+struct PreadOp {
   FileDescriptor fd;
   std::uint64_t offset = 0;
-  /// Constructs a Pread operation (read at an explicit offset).
-  static Pread make(FileDescriptor fd, std::uint64_t offset) { return Pread{fd, offset}; }
 };
+
+/// Constructs a PreadOp operation (read at an explicit offset).
+inline PreadOp pread(FileDescriptor fd, std::uint64_t offset) { return PreadOp{fd, offset}; }
 
 /// Writes the buffer to fd at the current file position (write(2) semantics).
-struct Write {
+struct WriteOp {
   FileDescriptor fd;
-  /// Constructs a Write operation (write at the current file position).
-  static Write make(FileDescriptor fd) { return Write{fd}; }
 };
 
+/// Constructs a WriteOp operation (write at the current file position).
+inline WriteOp write(FileDescriptor fd) { return WriteOp{fd}; }
+
 /// Writes the buffer to fd at an explicit offset (pwrite(2) semantics).
-struct Pwrite {
+struct PwriteOp {
   FileDescriptor fd;
   std::uint64_t offset = 0;
-  /// Constructs a Pwrite operation (write at an explicit offset).
-  static Pwrite make(FileDescriptor fd, std::uint64_t offset) { return Pwrite{fd, offset}; }
 };
+
+/// Constructs a PwriteOp operation (write at an explicit offset).
+inline PwriteOp pwrite(FileDescriptor fd, std::uint64_t offset) { return PwriteOp{fd, offset}; }
 
 /// Seeks in fd (lseek(2) semantics). Completes with the new offset.
 ///
 /// No io_uring opcode exists for lseek: the Reactor executes it synchronously
 /// when the current batch is processed.
-struct Lseek {
+struct LseekOp {
   FileDescriptor fd;
   std::int64_t offset = 0;
   std::int32_t whence = 0;
-  /// Constructs an Lseek operation (lseek(2) semantics).
-  static Lseek make(FileDescriptor fd, std::int64_t offset, std::int32_t whence) { return Lseek{fd, offset, whence}; }
 };
+
+/// Constructs an LseekOp operation (lseek(2) semantics).
+inline LseekOp lseek(FileDescriptor fd, std::int64_t offset, std::int32_t whence) {
+  return LseekOp{fd, offset, whence};
+}
 
 /// Stats fd (fstat(2) semantics) through IORING_OP_STATX with AT_EMPTY_PATH.
 ///
 /// The submitted buffer must hold at least k_statx_size bytes; on success its
 /// first sizeof(struct stat) bytes are rewritten as a struct stat.
-struct Fstat {
+struct FstatOp {
   FileDescriptor fd;
-  /// Constructs an Fstat operation (fstat(2) semantics).
-  static Fstat make(FileDescriptor fd) { return Fstat{fd}; }
 };
 
+/// Constructs an FstatOp operation (fstat(2) semantics).
+inline FstatOp fstat(FileDescriptor fd) { return FstatOp{fd}; }
+
 /// Closes fd (close(2) semantics).
-struct Close {
+struct CloseOp {
   FileDescriptor fd;
-  /// Constructs a Close operation.
-  static Close make(FileDescriptor fd) { return Close{fd}; }
 };
+
+/// Constructs a CloseOp operation.
+inline CloseOp close(FileDescriptor fd) { return CloseOp{fd}; }
 
 /// Marks a socket as passive (listen(2) semantics).
 ///
 /// No io_uring opcode exists for listen: the Reactor executes it synchronously
 /// when the current batch is processed.
-struct Listen {
+struct ListenOp {
   FileDescriptor fd;
   std::int32_t backlog = 0;
-  /// Constructs a Listen operation (listen(2) semantics).
-  static Listen make(FileDescriptor fd, std::int32_t backlog) { return Listen{fd, backlog}; }
 };
+
+/// Constructs a ListenOp operation (listen(2) semantics).
+inline ListenOp listen(FileDescriptor fd, std::int32_t backlog) { return ListenOp{fd, backlog}; }
 
 /// Accepts a connection on a listening socket (accept(2) semantics). Completes
 /// with the accepted FileDescriptor. When a buffer is submitted it receives the
 /// peer address (a sockaddr).
-struct Accept {
+struct AcceptOp {
   FileDescriptor fd;
   std::int32_t flags = 0;
   std::uint32_t addr_len = 0; // filled by the Reactor from the buffer size
-  /// Constructs an Accept operation. Submit it with an AcceptBuffer to receive the
-  /// peer address (a sockaddr_storage), e.g.:
-  ///   reactor.submit(Accept::make(lfd), AcceptBuffer{}, callback);
-  static Accept make(FileDescriptor fd, std::int32_t flags = 0) { return Accept{fd, flags, 0}; }
 };
 
+/// Constructs an AcceptOp operation. Submit it with an AcceptBuffer to receive the
+/// peer address (a sockaddr_storage), e.g.:
+///   reactor.submit(accept(lfd), AcceptBuffer{}, callback);
+inline AcceptOp accept(FileDescriptor fd, std::int32_t flags = 0) { return AcceptOp{fd, flags, 0}; }
+
 /// Sends the buffer on a connected socket (send(2) semantics).
-struct Send {
+struct SendOp {
   FileDescriptor fd;
   std::int32_t flags = 0;
-  /// Constructs a Send operation (send(2) semantics on a connected socket).
-  static Send make(FileDescriptor fd, std::int32_t flags = 0) { return Send{fd, flags}; }
 };
+
+/// Constructs a SendOp operation (send(2) semantics on a connected socket).
+inline SendOp send(FileDescriptor fd, std::int32_t flags = 0) { return SendOp{fd, flags}; }
 
 /// Receives into the buffer from a connected socket (recv(2) semantics). On
 /// success the buffer is shrunk to the number of bytes received.
-struct Recv {
+struct RecvOp {
   FileDescriptor fd;
   std::int32_t flags = 0;
-  /// Constructs a Recv operation (recv(2) semantics on a connected socket).
-  static Recv make(FileDescriptor fd, std::int32_t flags = 0) { return Recv{fd, flags}; }
 };
+
+/// Constructs a RecvOp operation (recv(2) semantics on a connected socket).
+inline RecvOp recv(FileDescriptor fd, std::int32_t flags = 0) { return RecvOp{fd, flags}; }
 
 /// Plain mirror of __kernel_timespec (identical layout: two 64-bit fields).
 struct Timespec {
@@ -149,13 +162,13 @@ struct Timespec {
 };
 
 /// fsync(2) on fd; datasync selects fdatasync(2) semantics. Completes with 0.
-struct Fsync {
+struct FsyncOp {
   FileDescriptor fd;
   bool use_datasync = false;
-
-  /// Constructs an Fsync operation; pass use_datasync = true for fdatasync(2) semantics.
-  static Fsync make(FileDescriptor fd, bool use_datasync = false) { return Fsync{fd, use_datasync}; }
 };
+
+/// Constructs an FsyncOp operation; pass use_datasync = true for fdatasync(2) semantics.
+inline FsyncOp fsync(FileDescriptor fd, bool use_datasync = false) { return FsyncOp{fd, use_datasync}; }
 
 /// bind(2) on fd to an IPv4 or IPv6 endpoint. Completes with 0 on success.
 ///
@@ -164,77 +177,79 @@ struct Fsync {
 ///
 /// The sockaddr_in / sockaddr_in6 is stored inside the operation (static buffer),
 /// so no C socket type appears in the public API.
-struct Bind {
+struct BindOp {
   FileDescriptor fd;
   std::variant<Ipv4Endpoint, Ipv6Endpoint> endpoint;
   StaticBuffer<k_sockaddr_storage_size> addr{}; // sockaddr_in / sockaddr_in6 storage, filled by the factory
   std::uint32_t addr_len = 0;                   // filled by the factory
-
-  /// Constructs a Bind operation for an IPv4 endpoint (implemented in the library,
-  /// where the sockaddr_in is built from the endpoint).
-  static Bind make(FileDescriptor fd, Ipv4Endpoint endpoint);
-
-  /// Constructs a Bind operation for an IPv6 endpoint (implemented in the library,
-  /// where the sockaddr_in6 is built from the endpoint).
-  static Bind make(FileDescriptor fd, Ipv6Endpoint endpoint);
 };
+
+/// Constructs a BindOp operation for an IPv4 endpoint (implemented in the library,
+/// where the sockaddr_in is built from the endpoint).
+BindOp bind(FileDescriptor fd, Ipv4Endpoint endpoint);
+
+/// Constructs a BindOp operation for an IPv6 endpoint (implemented in the library,
+/// where the sockaddr_in6 is built from the endpoint).
+BindOp bind(FileDescriptor fd, Ipv6Endpoint endpoint);
 
 /// connect(2) on fd to an IPv4 endpoint. Completes with 0 on success.
 ///
 /// The sockaddr_in is stored inside the operation (static buffer), so no C socket
 /// type appears in the public API.
-struct Connect {
+struct ConnectOp {
   FileDescriptor fd;
   Ipv4Endpoint endpoint;
   StaticBuffer<k_sockaddr_in_size> addr{}; // sockaddr_in storage, filled by the factory
-
-  /// Constructs a Connect operation (implemented in the library, where the sockaddr_in
-  /// is built from the endpoint).
-  static Connect make(FileDescriptor fd, Ipv4Endpoint endpoint);
 };
+
+/// Constructs a ConnectOp operation (implemented in the library, where the sockaddr_in
+/// is built from the endpoint).
+ConnectOp connect(FileDescriptor fd, Ipv4Endpoint endpoint);
 
 /// Backing operation of Timer: completes when the timeout expires.
-struct Timeout {
+struct TimeoutOp {
   Timespec ts{};
-  /// Constructs a Timeout operation firing after the given duration.
-  static Timeout make(std::chrono::nanoseconds duration) {
-    Timeout op{};
-    const std::int64_t ns = duration.count();
-    op.ts.sec = ns / 1000000000LL;
-    op.ts.nsec = ns % 1000000000LL;
-    return op;
-  }
 };
+
+/// Constructs a TimeoutOp operation firing after the given duration.
+inline TimeoutOp timeout(std::chrono::nanoseconds duration) {
+  TimeoutOp op{};
+  const std::int64_t ns = duration.count();
+  op.ts.sec = ns / 1000000000LL;
+  op.ts.nsec = ns % 1000000000LL;
+  return op;
+}
 
 /// Variant of every operation supported by the Reactor. Each operation is its own
 /// struct held by this variant.
-using Operation = std::variant<OpenAt, Read, Pread, Write, Pwrite, Lseek, Fstat, Close, Listen, Accept, Send, Recv,
-                               Timeout, Fsync, Connect, Bind>;
+using Operation = std::variant<OpenAtOp, ReadOp, PreadOp, WriteOp, PwriteOp, LseekOp, FstatOp, CloseOp, ListenOp,
+                               AcceptOp, SendOp, RecvOp, TimeoutOp, FsyncOp, ConnectOp, BindOp>;
 
 /// True when Op is one of the operation structs of the Operation variant.
 template <typename Op>
 inline constexpr bool is_operation_v =
-    std::is_same_v<std::decay_t<Op>, OpenAt> || std::is_same_v<std::decay_t<Op>, Fsync> ||
-    std::is_same_v<std::decay_t<Op>, Connect> || std::is_same_v<std::decay_t<Op>, Read> ||
-    std::is_same_v<std::decay_t<Op>, Pread> || std::is_same_v<std::decay_t<Op>, Write> ||
-    std::is_same_v<std::decay_t<Op>, Pwrite> || std::is_same_v<std::decay_t<Op>, Lseek> ||
-    std::is_same_v<std::decay_t<Op>, Fstat> || std::is_same_v<std::decay_t<Op>, Close> ||
-    std::is_same_v<std::decay_t<Op>, Listen> || std::is_same_v<std::decay_t<Op>, Accept> ||
-    std::is_same_v<std::decay_t<Op>, Send> || std::is_same_v<std::decay_t<Op>, Recv> ||
-    std::is_same_v<std::decay_t<Op>, Timeout> || std::is_same_v<std::decay_t<Op>, Bind>;
+    std::is_same_v<std::decay_t<Op>, OpenAtOp> || std::is_same_v<std::decay_t<Op>, FsyncOp> ||
+    std::is_same_v<std::decay_t<Op>, ConnectOp> || std::is_same_v<std::decay_t<Op>, ReadOp> ||
+    std::is_same_v<std::decay_t<Op>, PreadOp> || std::is_same_v<std::decay_t<Op>, WriteOp> ||
+    std::is_same_v<std::decay_t<Op>, PwriteOp> || std::is_same_v<std::decay_t<Op>, LseekOp> ||
+    std::is_same_v<std::decay_t<Op>, FstatOp> || std::is_same_v<std::decay_t<Op>, CloseOp> ||
+    std::is_same_v<std::decay_t<Op>, ListenOp> || std::is_same_v<std::decay_t<Op>, AcceptOp> ||
+    std::is_same_v<std::decay_t<Op>, SendOp> || std::is_same_v<std::decay_t<Op>, RecvOp> ||
+    std::is_same_v<std::decay_t<Op>, TimeoutOp> || std::is_same_v<std::decay_t<Op>, BindOp>;
 
 /// True when the operation transfers data through the submitted buffer.
 template <typename Op>
 inline constexpr bool uses_buffer_v =
-    std::is_same_v<std::decay_t<Op>, Read> || std::is_same_v<std::decay_t<Op>, Pread> ||
-    std::is_same_v<std::decay_t<Op>, Write> || std::is_same_v<std::decay_t<Op>, Pwrite> ||
-    std::is_same_v<std::decay_t<Op>, Fstat> || std::is_same_v<std::decay_t<Op>, Accept> ||
-    std::is_same_v<std::decay_t<Op>, Send> || std::is_same_v<std::decay_t<Op>, Recv>;
+    std::is_same_v<std::decay_t<Op>, ReadOp> || std::is_same_v<std::decay_t<Op>, PreadOp> ||
+    std::is_same_v<std::decay_t<Op>, WriteOp> || std::is_same_v<std::decay_t<Op>, PwriteOp> ||
+    std::is_same_v<std::decay_t<Op>, FstatOp> || std::is_same_v<std::decay_t<Op>, AcceptOp> ||
+    std::is_same_v<std::decay_t<Op>, SendOp> || std::is_same_v<std::decay_t<Op>, RecvOp>;
 
 /// True for the operations that have no io_uring opcode and are therefore executed
 /// synchronously by the Reactor when the current batch is processed.
 template <typename Op>
-inline constexpr bool is_inline_v = std::is_same_v<std::decay_t<Op>, Lseek> ||
-                                    std::is_same_v<std::decay_t<Op>, Listen> || std::is_same_v<std::decay_t<Op>, Bind>;
+inline constexpr bool is_inline_v =
+    std::is_same_v<std::decay_t<Op>, LseekOp> || std::is_same_v<std::decay_t<Op>, ListenOp> ||
+    std::is_same_v<std::decay_t<Op>, BindOp>;
 
 } // namespace ringu

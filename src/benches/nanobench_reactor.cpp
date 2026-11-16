@@ -43,7 +43,7 @@ int main() {
 
   bench.run("preads 64x4KB + process(Batch)", [&] {
     for (std::int32_t i = 0; i < k_batch; ++i) {
-      reactor.submit(ringu::Pread{ringu::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk},
+      reactor.submit(ringu::pread(ringu::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk),
                      std::vector<std::byte>(static_cast<std::size_t>(k_chunk)),
                      [](ringu::Result<std::vector<std::byte>>, ringu::OperationId, std::int32_t) {});
     }
@@ -53,7 +53,7 @@ int main() {
 
   bench.run("preads 64x4KB with registered buffers (READ_FIXED)", [&] {
     for (std::int32_t i = 0; i < k_batch; ++i) {
-      reactor.submit(ringu::Pread{ringu::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk},
+      reactor.submit(ringu::pread(ringu::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk),
                      pool.borrow(), [](ringu::Result<ringu::RegisteredBuffer>, ringu::OperationId, std::int32_t) {});
     }
     reactor.process(ringu::Reactor::ProcessMode::Batch);
@@ -64,7 +64,7 @@ int main() {
     std::vector<std::int32_t> fds;
     fds.reserve(k_batch);
     for (std::int32_t i = 0; i < k_batch; ++i) {
-      reactor.submit(ringu::OpenAt::make(path, O_RDONLY, 0),
+      reactor.submit(ringu::open_at(path, O_RDONLY, 0),
                      [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
                        if (r.has_value()) {
                          fds.push_back(r->value());
@@ -73,7 +73,7 @@ int main() {
     }
     reactor.process(ringu::Reactor::ProcessMode::Batch);
     for (const std::int32_t fd : fds) {
-      reactor.submit(ringu::Close::make(ringu::FileDescriptor{fd}),
+      reactor.submit(ringu::close(ringu::FileDescriptor{fd}),
                      [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
     }
     reactor.process(ringu::Reactor::ProcessMode::Batch);

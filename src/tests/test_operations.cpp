@@ -29,42 +29,42 @@ TEST_CASE("StaticBuffer is a fixed-size buffer") {
   CHECK(ringu::k_sockaddr_storage_size == 128);
 }
 
-TEST_CASE("every operation struct has a static factory returning a constructed operation") {
+TEST_CASE("every operation has a free function returning a constructed operation") {
   const ringu::FileDescriptor fd{7};
 
-  const auto open = ringu::OpenAt::make("/tmp/some_file", O_RDWR, 0644);
+  const auto open = ringu::open_at("/tmp/some_file", O_RDWR, 0644);
   CHECK(open.dirfd == ringu::FileDescriptor{ringu::k_at_fdcwd});
   CHECK(open.path == "/tmp/some_file");
   CHECK(open.flags == O_RDWR);
   CHECK(open.mode == 0644);
-  const auto open_default_mode = ringu::OpenAt::make("/tmp/some_file", O_RDONLY);
+  const auto open_default_mode = ringu::open_at("/tmp/some_file", O_RDONLY);
   CHECK(open_default_mode.mode == 0644);
-  const auto openat = ringu::OpenAt::make(fd, "/tmp/some_file", O_RDONLY);
+  const auto openat = ringu::open_at(fd, "/tmp/some_file", O_RDONLY);
   CHECK(openat.dirfd == fd);
   CHECK(openat.path == "/tmp/some_file");
   CHECK(openat.flags == O_RDONLY);
   CHECK(openat.mode == 0644);
 
-  CHECK(ringu::Read::make(fd).fd == fd);
-  CHECK(ringu::Pread::make(fd, 42).fd == fd);
-  CHECK(ringu::Pread::make(fd, 42).offset == 42);
-  CHECK(ringu::Write::make(fd).fd == fd);
-  CHECK(ringu::Pwrite::make(fd, 8).offset == 8);
-  const auto lseek = ringu::Lseek::make(fd, 16, SEEK_SET);
+  CHECK(ringu::read(fd).fd == fd);
+  CHECK(ringu::pread(fd, 42).fd == fd);
+  CHECK(ringu::pread(fd, 42).offset == 42);
+  CHECK(ringu::write(fd).fd == fd);
+  CHECK(ringu::pwrite(fd, 8).offset == 8);
+  const auto lseek = ringu::lseek(fd, 16, SEEK_SET);
   CHECK(lseek.fd == fd);
   CHECK(lseek.offset == 16);
   CHECK(lseek.whence == SEEK_SET);
-  CHECK(ringu::Fstat::make(fd).fd == fd);
-  CHECK(ringu::Close::make(fd).fd == fd);
-  CHECK(ringu::Listen::make(fd, 128).backlog == 128);
-  const auto accept = ringu::Accept::make(fd, 0);
+  CHECK(ringu::fstat(fd).fd == fd);
+  CHECK(ringu::close(fd).fd == fd);
+  CHECK(ringu::listen(fd, 128).backlog == 128);
+  const auto accept = ringu::accept(fd, 0);
   CHECK(accept.fd == fd);
   CHECK(accept.flags == 0);
   CHECK(accept.addr_len == 0);
-  CHECK(ringu::Send::make(fd, MSG_NOSIGNAL).flags == MSG_NOSIGNAL);
-  CHECK(ringu::Recv::make(fd).fd == fd);
+  CHECK(ringu::send(fd, MSG_NOSIGNAL).flags == MSG_NOSIGNAL);
+  CHECK(ringu::recv(fd).fd == fd);
 
-  const auto timeout = ringu::Timeout::make(std::chrono::milliseconds(1500));
+  const auto timeout = ringu::timeout(std::chrono::milliseconds(1500));
   CHECK(timeout.ts.sec == 1);
   CHECK(timeout.ts.nsec == 500000000);
 }
@@ -80,7 +80,7 @@ TEST_CASE("Accept submitted with a static AcceptBuffer receives the peer address
 
   // bind through the reactor (inline Bind operation)
   bool bound = false;
-  reactor.submit(ringu::Bind::make(ringu::FileDescriptor{lfd}, ringu::Ipv4Endpoint::loopback(0)),
+  reactor.submit(ringu::bind(ringu::FileDescriptor{lfd}, ringu::Ipv4Endpoint::loopback(0)),
                  [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res == 0);
@@ -93,7 +93,7 @@ TEST_CASE("Accept submitted with a static AcceptBuffer receives the peer address
   socklen_t alen = sizeof(addr);
   REQUIRE(::getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
 
-  reactor.submit(ringu::Listen::make(ringu::FileDescriptor{lfd}, 16),
+  reactor.submit(ringu::listen(ringu::FileDescriptor{lfd}, 16),
                  [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
   reactor.process(Mode::Batch);
 
@@ -103,7 +103,7 @@ TEST_CASE("Accept submitted with a static AcceptBuffer receives the peer address
 
   ringu::FileDescriptor accepted{-1};
   sockaddr_in peer{};
-  reactor.submit(ringu::Accept::make(ringu::FileDescriptor{lfd}), ringu::AcceptBuffer{},
+  reactor.submit(ringu::accept(ringu::FileDescriptor{lfd}), ringu::AcceptBuffer{},
                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
                    REQUIRE(r.has_value());
                    CHECK(res >= 0);
@@ -117,7 +117,7 @@ TEST_CASE("Accept submitted with a static AcceptBuffer receives the peer address
   REQUIRE(::getpeername(accepted.value(), reinterpret_cast<sockaddr*>(&peer), &plen) == 0);
   CHECK(peer.sin_family == AF_INET);
 
-  reactor.submit(ringu::Close::make(accepted), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  reactor.submit(ringu::close(accepted), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
   reactor.process(Mode::Batch);
   ::close(cfd);
   ::close(lfd);

@@ -102,8 +102,8 @@ Result<Ipv6Endpoint> Ipv6Endpoint::parse(std::string_view ip, std::uint16_t port
   return ep;
 }
 
-Bind Bind::make(FileDescriptor fd, Ipv4Endpoint endpoint) {
-  Bind op{};
+BindOp bind(FileDescriptor fd, Ipv4Endpoint endpoint) {
+  BindOp op{};
   op.fd = fd;
   op.endpoint = endpoint;
   sockaddr_in sa{};
@@ -116,8 +116,8 @@ Bind Bind::make(FileDescriptor fd, Ipv4Endpoint endpoint) {
   return op;
 }
 
-Bind Bind::make(FileDescriptor fd, Ipv6Endpoint endpoint) {
-  Bind op{};
+BindOp bind(FileDescriptor fd, Ipv6Endpoint endpoint) {
+  BindOp op{};
   op.fd = fd;
   op.endpoint = endpoint;
   sockaddr_in6 sa{};
@@ -130,8 +130,8 @@ Bind Bind::make(FileDescriptor fd, Ipv6Endpoint endpoint) {
   return op;
 }
 
-Connect Connect::make(FileDescriptor fd, Ipv4Endpoint endpoint) {
-  Connect op{};
+ConnectOp connect(FileDescriptor fd, Ipv4Endpoint endpoint) {
+  ConnectOp op{};
   op.fd = fd;
   op.endpoint = endpoint;
   sockaddr_in sa{};
