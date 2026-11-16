@@ -44,202 +44,233 @@ std::string to_string(const std::vector<std::byte>& b) { return {reinterpret_cas
 } // namespace
 
 TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
-  ringu::Reactor reactor{64};
-  using Mode = ringu::Reactor::ProcessMode;
-  using State = ringu::Reactor::OperationState;
-  // "hello world ringu!" = 18 bytes
-  const std::string path = make_tmp_file("file_ops", "hello world ringu!");
+  for (const bool sqpoll : {true, false}) {
+    CAPTURE(sqpoll);
+    auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64, .sqpoll = sqpoll});
+    REQUIRE(reactor_result.has_value());
+    auto reactor = std::move(reactor_result).value();
+    CHECK(reactor->sqpoll_enabled() == sqpoll);
+    using Mode = ringu::Reactor::ProcessMode;
+    using State = ringu::Reactor::OperationState;
+    // "hello world ringu!" = 18 bytes
+    const std::string path = make_tmp_file("file_ops", "hello world ringu!");
 
-  // open
-  ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::open_at(path, O_RDWR),
-                 [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
-                   REQUIRE(r.has_value());
-                   CHECK(res >= 0);
-                   fd = *r;
-                 });
-  reactor.process(Mode::Batch);
-  REQUIRE(fd.value() >= 0);
+    // open
+    ringu::FileDescriptor fd{-1};
+    reactor->submit(ringu::open_at(path, O_RDWR),
+                    [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
+                      REQUIRE(r.has_value());
+                      CHECK(res >= 0);
+                      fd = *r;
+                    });
+    reactor->process(Mode::Batch);
+    REQUIRE(fd.value() >= 0);
 
-  // write at the current position (0): overwrite the first 4 bytes with "ABCD"
-  std::int32_t written = -1;
-  reactor.submit(ringu::write(fd), to_bytes("ABCD"),
-                 [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
-                   REQUIRE(r.has_value());
-                   written = res;
-                 });
-  reactor.process(Mode::Batch);
-  CHECK(written == 4);
+    // write at the current position (0): overwrite the first 4 bytes with "ABCD"
+    std::int32_t written = -1;
+    reactor->submit(ringu::write(fd), to_bytes("ABCD"),
+                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                      REQUIRE(r.has_value());
+                      written = res;
+                    });
+    reactor->process(Mode::Batch);
+    CHECK(written == 4);
 
-  // pwrite at offset 8: "WXYZ" (does not move the current position)
-  std::int32_t pwritten = -1;
-  reactor.submit(ringu::pwrite(fd, 8), to_bytes("WXYZ"),
-                 [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
-                   REQUIRE(r.has_value());
-                   pwritten = res;
-                 });
-  reactor.process(Mode::Batch);
-  CHECK(pwritten == 4);
-  // file is now "ABCDo woWXYZringu!"
+    // pwrite at offset 8: "WXYZ" (does not move the current position)
+    std::int32_t pwritten = -1;
+    reactor->submit(ringu::pwrite(fd, 8), to_bytes("WXYZ"),
+                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                      REQUIRE(r.has_value());
+                      pwritten = res;
+                    });
+    reactor->process(Mode::Batch);
+    CHECK(pwritten == 4);
+    // file is now "ABCDo woWXYZringu!"
 
-  // pread 8 bytes at offset 0
-  std::string pread_out;
-  reactor.submit(ringu::pread(fd, 0), std::vector<std::byte>(8),
-                 [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
-                   REQUIRE(r.has_value());
-                   CHECK(res == 8);
-                   CHECK(r->size() == 8); // buffer shrunk to the bytes read
-                   pread_out = to_string(*r);
-                 });
-  reactor.process(Mode::Batch);
-  CHECK(pread_out == "ABCDo wo");
+    // pread 8 bytes at offset 0
+    std::string pread_out;
+    reactor->submit(ringu::pread(fd, 0), std::vector<std::byte>(8),
+                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                      REQUIRE(r.has_value());
+                      CHECK(res == 8);
+                      CHECK(r->size() == 8); // buffer shrunk to the bytes read
+                      pread_out = to_string(*r);
+                    });
+    reactor->process(Mode::Batch);
+    CHECK(pread_out == "ABCDo wo");
 
-  // read at the current position (4 after the write): 6 bytes
-  std::string read_out;
-  reactor.submit(ringu::read(fd), std::vector<std::byte>(6),
-                 [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
-                   REQUIRE(r.has_value());
-                   CHECK(res == 6);
-                   read_out = to_string(*r);
-                 });
-  reactor.process(Mode::Batch);
-  CHECK(read_out == "o woWX");
+    // read at the current position (4 after the write): 6 bytes
+    std::string read_out;
+    reactor->submit(ringu::read(fd), std::vector<std::byte>(6),
+                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                      REQUIRE(r.has_value());
+                      CHECK(res == 6);
+                      read_out = to_string(*r);
+                    });
+    reactor->process(Mode::Batch);
+    CHECK(read_out == "o woWX");
 
-  // lseek back to 0, then read 4 bytes from position 0
-  std::int64_t new_pos = -1;
-  reactor.submit(ringu::lseek(fd, 0, SEEK_SET), [&](ringu::Result<std::int64_t> r, ringu::OperationId, std::int32_t) {
-    REQUIRE(r.has_value());
-    new_pos = *r;
-  });
-  reactor.process(Mode::Batch);
-  CHECK(new_pos == 0);
-  std::string read2_out;
-  reactor.submit(ringu::read(fd), std::vector<std::byte>(4),
-                 [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
-                   REQUIRE(r.has_value());
-                   CHECK(res == 4);
-                   read2_out = to_string(*r);
-                 });
-  reactor.process(Mode::Batch);
-  CHECK(read2_out == "ABCD");
+    // lseek back to 0, then read 4 bytes from position 0
+    std::int64_t new_pos = -1;
+    reactor->submit(ringu::lseek(fd, 0, SEEK_SET),
+                    [&](ringu::Result<std::int64_t> r, ringu::OperationId, std::int32_t) {
+                      REQUIRE(r.has_value());
+                      new_pos = *r;
+                    });
+    reactor->process(Mode::Batch);
+    CHECK(new_pos == 0);
+    std::string read2_out;
+    reactor->submit(ringu::read(fd), std::vector<std::byte>(4),
+                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                      REQUIRE(r.has_value());
+                      CHECK(res == 4);
+                      read2_out = to_string(*r);
+                    });
+    reactor->process(Mode::Batch);
+    CHECK(read2_out == "ABCD");
 
-  // fstat: the buffer (>= sizeof(statx)) receives a struct stat on success
-  reactor.submit(ringu::fstat(fd), std::vector<std::byte>(sizeof(struct statx)),
-                 [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
-                   REQUIRE(r.has_value());
-                   CHECK(res == 0);
-                   const auto* st = reinterpret_cast<const struct stat*>(r->data());
-                   CHECK(st->st_size == 18);
-                   CHECK(S_ISREG(st->st_mode));
-                 });
-  reactor.process(Mode::Batch);
+    // fstat: the buffer (>= sizeof(statx)) receives a struct stat on success
+    reactor->submit(ringu::fstat(fd), std::vector<std::byte>(sizeof(struct statx)),
+                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                      REQUIRE(r.has_value());
+                      CHECK(res == 0);
+                      const auto* st = reinterpret_cast<const struct stat*>(r->data());
+                      CHECK(st->st_size == 18);
+                      CHECK(S_ISREG(st->st_mode));
+                    });
+    reactor->process(Mode::Batch);
 
-  // close
-  bool closed = false;
-  reactor.submit(ringu::close(fd), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
-    REQUIRE(r.has_value());
-    CHECK(res == 0);
-    closed = true;
-  });
-  reactor.process(Mode::Batch);
-  CHECK(closed);
+    // close
+    bool closed = false;
+    reactor->submit(ringu::close(fd), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+      REQUIRE(r.has_value());
+      CHECK(res == 0);
+      closed = true;
+    });
+    reactor->process(Mode::Batch);
+    CHECK(closed);
 
-  // open, write, pwrite, pread, read, lseek, read, fstat, close
-  CHECK(reactor.count_operations(State::Completed) == 9);
-  CHECK(reactor.count_operations(State::Failed) == 0);
-  CHECK(reactor.count_operations(State::Pending) == 0);
-  ::unlink(path.c_str());
+    // open, write, pwrite, pread, read, lseek, read, fstat, close
+    CHECK(reactor->count_operations(State::Completed) == 9);
+    CHECK(reactor->count_operations(State::Failed) == 0);
+    CHECK(reactor->count_operations(State::Pending) == 0);
+    ::unlink(path.c_str());
+  }
 }
 
 TEST_CASE("pread into a std::array buffer") {
-  ringu::Reactor reactor{64};
-  using Mode = ringu::Reactor::ProcessMode;
-  const std::string path = make_tmp_file("array_buf", "0123456789");
-  ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::open_at(path, O_RDONLY, 0),
-                 [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
-                   REQUIRE(r.has_value());
-                   fd = *r;
-                 });
-  reactor.process(Mode::Batch);
-  REQUIRE(fd.value() >= 0);
+  for (const bool sqpoll : {true, false}) {
+    CAPTURE(sqpoll);
+    auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64, .sqpoll = sqpoll});
+    REQUIRE(reactor_result.has_value());
+    auto reactor = std::move(reactor_result).value();
+    CHECK(reactor->sqpoll_enabled() == sqpoll);
+    using Mode = ringu::Reactor::ProcessMode;
+    const std::string path = make_tmp_file("array_buf", "0123456789");
+    ringu::FileDescriptor fd{-1};
+    reactor->submit(ringu::open_at(path, O_RDONLY, 0),
+                    [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+                      REQUIRE(r.has_value());
+                      fd = *r;
+                    });
+    reactor->process(Mode::Batch);
+    REQUIRE(fd.value() >= 0);
 
-  std::array<std::byte, 4> buf{};
-  reactor.submit(ringu::pread(fd, 6), std::move(buf),
-                 [&](ringu::Result<std::array<std::byte, 4>> r, ringu::OperationId, std::int32_t res) {
-                   REQUIRE(r.has_value());
-                   CHECK(res == 4);
-                   const auto& b = *r;
-                   CHECK(std::string{reinterpret_cast<const char*>(b.data()), b.size()} == "6789");
-                 });
-  reactor.process(Mode::Batch);
-  reactor.submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
-  reactor.process(Mode::Batch);
-  ::unlink(path.c_str());
+    std::array<std::byte, 4> buf{};
+    reactor->submit(ringu::pread(fd, 6), std::move(buf),
+                    [&](ringu::Result<std::array<std::byte, 4>> r, ringu::OperationId, std::int32_t res) {
+                      REQUIRE(r.has_value());
+                      CHECK(res == 4);
+                      const auto& b = *r;
+                      CHECK(std::string{reinterpret_cast<const char*>(b.data()), b.size()} == "6789");
+                    });
+    reactor->process(Mode::Batch);
+    reactor->submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+    reactor->process(Mode::Batch);
+    ::unlink(path.c_str());
+  }
 }
 
 TEST_CASE("open of a missing file fails with the mapped I/O code") {
-  ringu::Reactor reactor{64};
-  using State = ringu::Reactor::OperationState;
-  bool called = false;
-  reactor.submit(ringu::open_at("/tmp/ringu_definitely_missing_file_xyz", O_RDONLY, 0),
-                 [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
-                   called = true;
-                   CHECK_FALSE(r.has_value());
-                   REQUIRE(std::holds_alternative<ringu::IoError>(r.error()));
-                   CHECK(std::get<ringu::IoError>(r.error()).value == -ENOENT);
-                 });
-  reactor.process(ringu::Reactor::ProcessMode::Batch);
-  CHECK(called);
-  CHECK(reactor.count_operations(State::Failed) == 1);
-  CHECK(reactor.count_operations(State::Completed) == 0);
+  for (const bool sqpoll : {true, false}) {
+    CAPTURE(sqpoll);
+    auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64, .sqpoll = sqpoll});
+    REQUIRE(reactor_result.has_value());
+    auto reactor = std::move(reactor_result).value();
+    CHECK(reactor->sqpoll_enabled() == sqpoll);
+    using State = ringu::Reactor::OperationState;
+    bool called = false;
+    reactor->submit(ringu::open_at("/tmp/ringu_definitely_missing_file_xyz", O_RDONLY, 0),
+                    [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+                      called = true;
+                      CHECK_FALSE(r.has_value());
+                      REQUIRE(std::holds_alternative<ringu::IoError>(r.error()));
+                      CHECK(std::get<ringu::IoError>(r.error()).value == -ENOENT);
+                    });
+    reactor->process(ringu::Reactor::ProcessMode::Batch);
+    CHECK(called);
+    CHECK(reactor->count_operations(State::Failed) == 1);
+    CHECK(reactor->count_operations(State::Completed) == 0);
+  }
 }
 
 TEST_CASE("read on a closed fd fails with EBADF") {
-  ringu::Reactor reactor{64};
-  using Mode = ringu::Reactor::ProcessMode;
-  using State = ringu::Reactor::OperationState;
-  const std::string path = make_tmp_file("ebadf", "data");
-  ringu::FileDescriptor fd{-1};
-  reactor.submit(ringu::open_at(path, O_RDONLY, 0),
-                 [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
-                   REQUIRE(r.has_value());
-                   fd = *r;
-                 });
-  reactor.process(Mode::Batch);
-  reactor.submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
-  reactor.process(Mode::Batch);
+  for (const bool sqpoll : {true, false}) {
+    CAPTURE(sqpoll);
+    auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64, .sqpoll = sqpoll});
+    REQUIRE(reactor_result.has_value());
+    auto reactor = std::move(reactor_result).value();
+    CHECK(reactor->sqpoll_enabled() == sqpoll);
+    using Mode = ringu::Reactor::ProcessMode;
+    using State = ringu::Reactor::OperationState;
+    const std::string path = make_tmp_file("ebadf", "data");
+    ringu::FileDescriptor fd{-1};
+    reactor->submit(ringu::open_at(path, O_RDONLY, 0),
+                    [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+                      REQUIRE(r.has_value());
+                      fd = *r;
+                    });
+    reactor->process(Mode::Batch);
+    reactor->submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+    reactor->process(Mode::Batch);
 
-  bool called = false;
-  reactor.submit(ringu::pread(fd, 0), std::vector<std::byte>(4),
-                 [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t) {
-                   called = true;
-                   CHECK_FALSE(r.has_value());
-                   REQUIRE(std::holds_alternative<ringu::IoError>(r.error()));
-                   CHECK(std::get<ringu::IoError>(r.error()).value == -EBADF);
-                 });
-  reactor.process(Mode::Batch);
-  CHECK(called);
-  CHECK(reactor.count_operations(State::Failed) == 1);
-  ::unlink(path.c_str());
+    bool called = false;
+    reactor->submit(ringu::pread(fd, 0), std::vector<std::byte>(4),
+                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t) {
+                      called = true;
+                      CHECK_FALSE(r.has_value());
+                      REQUIRE(std::holds_alternative<ringu::IoError>(r.error()));
+                      CHECK(std::get<ringu::IoError>(r.error()).value == -EBADF);
+                    });
+    reactor->process(Mode::Batch);
+    CHECK(called);
+    CHECK(reactor->count_operations(State::Failed) == 1);
+    ::unlink(path.c_str());
+  }
 }
 
 TEST_CASE("lseek on a pipe fails with ESPIPE") {
-  ringu::Reactor reactor{64};
-  using State = ringu::Reactor::OperationState;
-  std::int32_t fds[2];
-  REQUIRE(::pipe(reinterpret_cast<int*>(fds)) == 0);
-  bool called = false;
-  reactor.submit(ringu::lseek(ringu::FileDescriptor{fds[0]}, 0, SEEK_SET),
-                 [&](ringu::Result<std::int64_t> r, ringu::OperationId, std::int32_t) {
-                   called = true;
-                   CHECK_FALSE(r.has_value());
-                   REQUIRE(std::holds_alternative<ringu::IoError>(r.error()));
-                   CHECK(std::get<ringu::IoError>(r.error()).value == -ESPIPE);
-                 });
-  reactor.process(ringu::Reactor::ProcessMode::Batch);
-  CHECK(called);
-  CHECK(reactor.count_operations(State::Failed) == 1);
-  ::close(fds[0]);
-  ::close(fds[1]);
+  for (const bool sqpoll : {true, false}) {
+    CAPTURE(sqpoll);
+    auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64, .sqpoll = sqpoll});
+    REQUIRE(reactor_result.has_value());
+    auto reactor = std::move(reactor_result).value();
+    CHECK(reactor->sqpoll_enabled() == sqpoll);
+    using State = ringu::Reactor::OperationState;
+    std::int32_t fds[2];
+    REQUIRE(::pipe(reinterpret_cast<int*>(fds)) == 0);
+    bool called = false;
+    reactor->submit(ringu::lseek(ringu::FileDescriptor{fds[0]}, 0, SEEK_SET),
+                    [&](ringu::Result<std::int64_t> r, ringu::OperationId, std::int32_t) {
+                      called = true;
+                      CHECK_FALSE(r.has_value());
+                      REQUIRE(std::holds_alternative<ringu::IoError>(r.error()));
+                      CHECK(std::get<ringu::IoError>(r.error()).value == -ESPIPE);
+                    });
+    reactor->process(ringu::Reactor::ProcessMode::Batch);
+    CHECK(called);
+    CHECK(reactor->count_operations(State::Failed) == 1);
+    ::close(fds[0]);
+    ::close(fds[1]);
+  }
 }

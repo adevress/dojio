@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -8,8 +9,11 @@
 #include <utility>
 #include <variant>
 
+#include <tl/expected.hpp>
+
 #include <ringu/action.hpp>
 #include <ringu/contracts.hpp>
+#include <ringu/error.hpp>
 #include <ringu/operation_id.hpp>
 #include <ringu/operations.hpp>
 #include <ringu/timer.hpp>
@@ -24,6 +28,22 @@ class IoUring;
 
 namespace ringu {
 
+/// Options controlling how a Reactor's underlying io_uring instance is set up.
+struct ReactorOptions {
+  /// Number of entries of the submission / completion rings.
+  std::uint32_t entries = 256;
+  /// Create the ring with IORING_SETUP_SQPOLL: a kernel thread polls the
+  /// submission queue, so submitting operations does not require an
+  /// io_uring_enter(2) syscall per batch (lower submission latency and CPU
+  /// usage). Enabled by default; requires a kernel and privileges allowing
+  /// SQPOLL.
+  bool sqpoll = true;
+  /// How long the SQPOLL kernel thread keeps polling the submission queue for
+  /// new SQEs before going to sleep (io_uring_params.sq_thread_idle), in
+  /// milliseconds. Only used when sqpoll is enabled. Default: 2000 ms.
+  std::chrono::milliseconds sqpoll_poll_time{2000};
+};
+
 /// The Reactor submits I/O operations, their associated buffer and their completion
 /// handler to a Linux io_uring instance, and dispatches the completions.
 ///
@@ -32,9 +52,11 @@ namespace ringu {
 /// multi-threaded share-nothing designs, create one Reactor per thread (see the
 /// demo_tcp_hello demo).
 ///
-/// Usage: submit() queues an operation (all parameters are passed by value, buffers
-/// are moved) and returns a typed OperationId; process() pushes the queued operations
-/// to the kernel and dispatches their completions.
+/// Usage: auto reactor = Reactor::Create(ReactorOptions{...}); check the returned
+/// tl::expected, then submit() queues
+/// an operation (all parameters are passed by value, buffers are moved) and returns
+/// a typed OperationId; process() pushes the queued operations to the kernel and
+/// dispatches their completions.
 class Reactor {
 public:
   /// Selects how process() behaves.
@@ -50,7 +72,13 @@ public:
     Failed     ///< failed (an I/O error code, or a cancellation)
   };
 
-  explicit Reactor(std::uint32_t entries = 256);
+  /// Creates a Reactor with the given options (SQPOLL enabled, 2000 ms poll
+  /// time by default). The constructor is private: use Create().
+  ///
+  /// Returns a RinguError (opcode + message) when the underlying io_uring ring
+  /// cannot be created (io_uring_setup(2) or ring mmap failure) instead of
+  /// throwing.
+  static tl::expected<std::unique_ptr<Reactor>, RinguError> Create(ReactorOptions options = ReactorOptions{});
   ~Reactor();
 
   Reactor(const Reactor&) = delete;
@@ -103,11 +131,20 @@ public:
   /// File descriptor of the underlying io_uring instance.
   [[nodiscard]] std::int32_t ring_fd() const;
 
+  /// True when the underlying ring was created with IORING_SETUP_SQPOLL.
+  [[nodiscard]] bool sqpoll_enabled() const;
+
+  /// The SQPOLL kernel thread polling time actually set on the ring
+  /// (io_uring_params.sq_thread_idle); zero when SQPOLL is disabled.
+  [[nodiscard]] std::chrono::milliseconds sqpoll_poll_time() const;
+
   /// The underlying io_uring ring (e.g. to create a RegisteredMemoryPool on this
   /// reactor).
   [[nodiscard]] detail::IoUring& ring() { return *ring_; }
 
 private:
+  explicit Reactor(std::unique_ptr<detail::IoUring> ring);
+
   template <typename Op, typename Buffer, typename Callback>
   OperationId do_submit(Op op, Buffer buffer, Callback callback, bool timer) {
     const OperationId id{next_id_};
@@ -136,6 +173,9 @@ private:
   void finish(ActionBase& action, std::int32_t res);
   /// io_uring_enter with EINTR retry; any other error is a contract failure.
   std::int32_t enter_wait(std::uint32_t to_submit, std::uint32_t min_complete);
+  /// Wakes the SQPOLL kernel thread when it is sleeping (IORING_SQ_NEED_WAKEUP);
+  /// a no-op on non-SQPOLL rings.
+  void wake_sqpoll_if_needed();
 
   // pimpl: the io_uring ring lives in the library
   std::unique_ptr<detail::IoUring> ring_;

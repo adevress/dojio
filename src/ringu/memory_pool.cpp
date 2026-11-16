@@ -3,13 +3,15 @@
 #include <ringu/contracts.hpp>
 #include <ringu/ring.hpp>
 
+#include <fmt/format.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <cstring>
 #include <limits>
 #include <new>
-#include <stdexcept>
 #include <vector>
 
 namespace ringu {
@@ -58,10 +60,21 @@ std::byte* RegisteredBuffer::data() const {
 
 std::uint64_t RegisteredBuffer::size() const { return pool_ != nullptr ? pool_->buffer_size() : 0; }
 
+tl::expected<std::unique_ptr<RegisteredMemoryPool>, RinguError>
+RegisteredMemoryPool::Create(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
+                             std::pmr::memory_resource* resource) {
+  enforce_precondition(buffer_size > 0 && count > 0);
+  auto pool = std::unique_ptr<RegisteredMemoryPool>(new RegisteredMemoryPool(ring, buffer_size, count, resource));
+  auto setup_result = pool->setup();
+  if (!setup_result.has_value()) {
+    return tl::unexpected(std::move(setup_result).error());
+  }
+  return pool;
+}
+
 RegisteredMemoryPool::RegisteredMemoryPool(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
                                            std::pmr::memory_resource* resource)
     : ring_(ring), buffer_size_(buffer_size), count_(count), resource_(resource), free_(count, 1, resource) {
-  enforce_precondition(buffer_size > 0 && count > 0);
   // portable cache line size from the C++ standard (<new>)
   cache_line_size_ = static_cast<std::uint64_t>(std::hardware_destructive_interference_size);
   page_size_ = query_page_size();
@@ -73,24 +86,36 @@ RegisteredMemoryPool::RegisteredMemoryPool(detail::IoUring& ring, std::uint64_t 
   // the backing memory is allocated as whole pages and distributed in chunks
   const std::uint64_t pages = (total + page_size_ - 1) / page_size_;
   mapped_size_ = pages * page_size_;
+}
+
+tl::expected<void, RinguError> RegisteredMemoryPool::setup() {
   // mmap takes a size_t length and an off_t offset (C API boundaries)
   void* p = ::mmap(nullptr, static_cast<std::size_t>(mapped_size_), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
                    -1, 0);
   if (p == MAP_FAILED) {
-    throw std::runtime_error("RegisteredMemoryPool: mmap failed");
+    // errno is only valid right after the failing syscall: capture it before formatting
+    const int err = errno;
+    return tl::unexpected(
+        RinguError{ErrorOpcode::MemoryPoolMmap, fmt::format("ringu: RegisteredMemoryPool mmap(size={}) failed: {}",
+                                                            mapped_size_, std::strerror(err))});
   }
   memory_ = static_cast<std::byte*>(p);
   // register every chunk with the ring as a fixed buffer
-  std::vector<iovec> iovecs(static_cast<std::size_t>(count));
-  for (std::uint64_t i = 0; i < count; ++i) {
+  std::vector<iovec> iovecs(static_cast<std::size_t>(count_));
+  for (std::uint64_t i = 0; i < count_; ++i) {
     iovecs[static_cast<std::size_t>(i)].iov_base = memory_ + static_cast<std::size_t>(i * chunk_size_);
     iovecs[static_cast<std::size_t>(i)].iov_len = static_cast<std::size_t>(chunk_size_);
   }
-  if (detail::register_buffers(ring_.fd(), iovecs.data(), static_cast<std::uint32_t>(count)) != 0) {
+  // register_buffers returns the raw syscall result: the negated errno on failure
+  const std::int32_t ret = detail::register_buffers(ring_.fd(), iovecs.data(), static_cast<std::uint32_t>(count_));
+  if (ret != 0) {
     ::munmap(memory_, static_cast<std::size_t>(mapped_size_));
     memory_ = nullptr;
-    throw std::runtime_error("RegisteredMemoryPool: io_uring_register(IORING_REGISTER_BUFFERS) failed");
+    return tl::unexpected(RinguError{ErrorOpcode::MemoryPoolRegisterBuffers,
+                                     fmt::format("ringu: io_uring_register(IORING_REGISTER_BUFFERS, nr={}) failed: {}",
+                                                 count_, std::strerror(-ret))});
   }
+  return {};
 }
 
 RegisteredMemoryPool::~RegisteredMemoryPool() {
@@ -105,7 +130,7 @@ RegisteredMemoryPool::~RegisteredMemoryPool() {
   }
 }
 
-RegisteredBuffer RegisteredMemoryPool::borrow() {
+tl::expected<RegisteredBuffer, RinguError> RegisteredMemoryPool::borrow() {
   for (std::uint64_t n = 0; n < count_; ++n) {
     const std::uint64_t i = (hint_ + n) % count_;
     if (free_[static_cast<std::size_t>(i)] != 0) {
@@ -117,7 +142,8 @@ RegisteredBuffer RegisteredMemoryPool::borrow() {
       return RegisteredBuffer(*this, i);
     }
   }
-  throw std::runtime_error("RegisteredMemoryPool: pool exhausted");
+  return tl::unexpected(RinguError{ErrorOpcode::MemoryPoolExhausted,
+                                   fmt::format("ringu: RegisteredMemoryPool exhausted (count={})", count_)});
 }
 
 void RegisteredMemoryPool::return_buffer(std::uint64_t index) noexcept {

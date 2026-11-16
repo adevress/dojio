@@ -70,55 +70,61 @@ TEST_CASE("every operation has a free function returning a constructed operation
 }
 
 TEST_CASE("Accept submitted with a static AcceptBuffer receives the peer address") {
-  ringu::Reactor reactor{64};
-  using Mode = ringu::Reactor::ProcessMode;
+  for (const bool sqpoll : {true, false}) {
+    CAPTURE(sqpoll);
+    auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64, .sqpoll = sqpoll});
+    REQUIRE(reactor_result.has_value());
+    auto reactor = std::move(reactor_result).value();
+    CHECK(reactor->sqpoll_enabled() == sqpoll);
+    using Mode = ringu::Reactor::ProcessMode;
 
-  const std::int32_t lfd = static_cast<std::int32_t>(::socket(AF_INET, SOCK_STREAM, 0));
-  REQUIRE(lfd >= 0);
-  const std::int32_t one = 1;
-  ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    const std::int32_t lfd = static_cast<std::int32_t>(::socket(AF_INET, SOCK_STREAM, 0));
+    REQUIRE(lfd >= 0);
+    const std::int32_t one = 1;
+    ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
-  // bind through the reactor (inline Bind operation)
-  bool bound = false;
-  reactor.submit(ringu::bind(ringu::FileDescriptor{lfd}, ringu::Ipv4Endpoint::loopback(0)),
-                 [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
-                   REQUIRE(r.has_value());
-                   CHECK(res == 0);
-                   bound = true;
-                 });
-  reactor.process(Mode::Batch);
-  CHECK(bound);
+    // bind through the reactor (inline Bind operation)
+    bool bound = false;
+    reactor->submit(ringu::bind(ringu::FileDescriptor{lfd}, ringu::Ipv4Endpoint::loopback(0)),
+                    [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+                      REQUIRE(r.has_value());
+                      CHECK(res == 0);
+                      bound = true;
+                    });
+    reactor->process(Mode::Batch);
+    CHECK(bound);
 
-  sockaddr_in addr{};
-  socklen_t alen = sizeof(addr);
-  REQUIRE(::getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
+    sockaddr_in addr{};
+    socklen_t alen = sizeof(addr);
+    REQUIRE(::getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
 
-  reactor.submit(ringu::listen(ringu::FileDescriptor{lfd}, 16),
-                 [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
-  reactor.process(Mode::Batch);
+    reactor->submit(ringu::listen(ringu::FileDescriptor{lfd}, 16),
+                    [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+    reactor->process(Mode::Batch);
 
-  const std::int32_t cfd = static_cast<std::int32_t>(::socket(AF_INET, SOCK_STREAM, 0));
-  REQUIRE(cfd >= 0);
-  REQUIRE(::connect(cfd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0);
+    const std::int32_t cfd = static_cast<std::int32_t>(::socket(AF_INET, SOCK_STREAM, 0));
+    REQUIRE(cfd >= 0);
+    REQUIRE(::connect(cfd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0);
 
-  ringu::FileDescriptor accepted{-1};
-  sockaddr_in peer{};
-  reactor.submit(ringu::accept(ringu::FileDescriptor{lfd}), ringu::AcceptBuffer{},
-                 [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
-                   REQUIRE(r.has_value());
-                   CHECK(res >= 0);
-                   accepted = *r;
-                 });
-  reactor.process(Mode::Batch);
-  REQUIRE(accepted.value() >= 0);
+    ringu::FileDescriptor accepted{-1};
+    sockaddr_in peer{};
+    reactor->submit(ringu::accept(ringu::FileDescriptor{lfd}), ringu::AcceptBuffer{},
+                    [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
+                      REQUIRE(r.has_value());
+                      CHECK(res >= 0);
+                      accepted = *r;
+                    });
+    reactor->process(Mode::Batch);
+    REQUIRE(accepted.value() >= 0);
 
-  // the AcceptBuffer was consumed by the submit; verify the peer via getpeername
-  socklen_t plen = sizeof(peer);
-  REQUIRE(::getpeername(accepted.value(), reinterpret_cast<sockaddr*>(&peer), &plen) == 0);
-  CHECK(peer.sin_family == AF_INET);
+    // the AcceptBuffer was consumed by the submit; verify the peer via getpeername
+    socklen_t plen = sizeof(peer);
+    REQUIRE(::getpeername(accepted.value(), reinterpret_cast<sockaddr*>(&peer), &plen) == 0);
+    CHECK(peer.sin_family == AF_INET);
 
-  reactor.submit(ringu::close(accepted), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
-  reactor.process(Mode::Batch);
-  ::close(cfd);
-  ::close(lfd);
+    reactor->submit(ringu::close(accepted), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+    reactor->process(Mode::Batch);
+    ::close(cfd);
+    ::close(lfd);
+  }
 }

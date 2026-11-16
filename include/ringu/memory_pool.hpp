@@ -2,10 +2,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <memory_resource>
 #include <vector>
 
+#include <tl/expected.hpp>
+
 #include <ringu/contracts.hpp>
+#include <ringu/error.hpp>
 
 namespace ringu::detail {
 
@@ -58,11 +62,11 @@ private:
 
 /// Memory pool of io_uring registered buffers, bound to a Ring.
 ///
-/// The pool is constructed with a reference to the io_uring Ring (see
-/// Reactor::ring()) and keeps that reference internally: every chunk it hands
-/// out is registered with the ring as a fixed buffer (IORING_REGISTER_BUFFERS),
-/// so read/write operations submitted with it take the zero-copy
-/// READ_FIXED/WRITE_FIXED path (no per-operation page pinning).
+/// The pool is created with Create(), passing a reference to the io_uring Ring
+/// (see Reactor::ring()), and keeps that reference internally: every chunk it
+/// hands out is registered with the ring as a fixed buffer
+/// (IORING_REGISTER_BUFFERS), so read/write operations submitted with it take
+/// the zero-copy READ_FIXED/WRITE_FIXED path (no per-operation page pinning).
 ///
 /// The backing memory is allocated as whole pages with mmap() and distributed in
 /// chunks. Every chunk starts on a cache-line boundary: the chunk stride is
@@ -79,16 +83,23 @@ private:
 /// The pool (and its buffers) are not thread safe.
 class RegisteredMemoryPool {
 public:
-  RegisteredMemoryPool(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
-                       std::pmr::memory_resource* resource = std::pmr::get_default_resource());
+  /// Creates a pool of count fixed buffers of buffer_size bytes, registered on
+  /// ring (e.g. Reactor::ring()). The constructor is private: use Create().
+  ///
+  /// Returns a RinguError (opcode + message) instead of throwing when the
+  /// backing mmap(2) or the io_uring fixed-buffer registration fails.
+  static tl::expected<std::unique_ptr<RegisteredMemoryPool>, RinguError>
+  Create(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
+         std::pmr::memory_resource* resource = std::pmr::get_default_resource());
   ~RegisteredMemoryPool();
 
   RegisteredMemoryPool(const RegisteredMemoryPool&) = delete;
   RegisteredMemoryPool& operator=(const RegisteredMemoryPool&) = delete;
 
   /// Borrows a buffer of buffer_size() bytes.
-  /// Throws std::runtime_error when the pool is exhausted.
-  [[nodiscard]] RegisteredBuffer borrow();
+  /// Returns a RinguError (opcode MemoryPoolExhausted) when the pool is
+  /// exhausted, instead of throwing.
+  [[nodiscard]] tl::expected<RegisteredBuffer, RinguError> borrow();
 
   [[nodiscard]] std::uint64_t buffer_size() const { return buffer_size_; }
   [[nodiscard]] std::uint64_t capacity() const { return count_; }
@@ -105,6 +116,13 @@ public:
 private:
   friend class RegisteredBuffer;
   void return_buffer(std::uint64_t index) noexcept;
+
+  RegisteredMemoryPool(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
+                       std::pmr::memory_resource* resource);
+  /// Fallible part of the construction: maps the backing memory and registers
+  /// every chunk with the ring. On failure returns the error and leaves the
+  /// object in a destructible state (memory_ == nullptr).
+  tl::expected<void, RinguError> setup();
 
   detail::IoUring& ring_; // the ring every chunk is registered with
   std::uint64_t buffer_size_;

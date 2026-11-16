@@ -15,12 +15,27 @@ namespace {
 inline constexpr std::uint64_t k_cancel_user_data = ~static_cast<std::uint64_t>(0);
 } // namespace
 
-Reactor::Reactor(std::uint32_t entries)
-    : ring_(std::make_unique<detail::IoUring>(entries)), pending_(&pool_resource_) {}
+tl::expected<std::unique_ptr<Reactor>, RinguError> Reactor::Create(ReactorOptions options) {
+  auto ring =
+      detail::IoUring::Create(options.entries, options.sqpoll ? IORING_SETUP_SQPOLL : 0u,
+                              options.sqpoll ? static_cast<std::uint32_t>(options.sqpoll_poll_time.count()) : 0u);
+  if (!ring.has_value()) {
+    return tl::unexpected(std::move(ring).error());
+  }
+  return std::unique_ptr<Reactor>(new Reactor(std::move(ring).value()));
+}
+
+Reactor::Reactor(std::unique_ptr<detail::IoUring> ring) : ring_(std::move(ring)), pending_(&pool_resource_) {}
 
 Reactor::~Reactor() = default;
 
 std::int32_t Reactor::ring_fd() const { return ring_->fd(); }
+
+bool Reactor::sqpoll_enabled() const { return ring_->sqpoll(); }
+
+std::chrono::milliseconds Reactor::sqpoll_poll_time() const {
+  return std::chrono::milliseconds(ring_->params().sq_thread_idle);
+}
 
 bool Reactor::cancel(OperationId id) {
   if (id.value == 0) {
@@ -38,10 +53,10 @@ bool Reactor::cancel(OperationId id) {
   }
   // make sure the target SQE is in the kernel before the cancel request
   flush(0);
-  io_uring_sqe* sqe = ring_->get_sqe();
+  io_uring_sqe* sqe = ring_->reserve_sqe();
   if (sqe == nullptr) {
     flush(0);
-    sqe = ring_->get_sqe();
+    sqe = ring_->reserve_sqe();
   }
   // after a flush the submission queue always has room: a nullptr here is a bug
   enforce_invariant(sqe != nullptr);
@@ -64,21 +79,47 @@ std::int32_t Reactor::enter_wait(std::uint32_t to_submit, std::uint32_t min_comp
   return ret;
 }
 
+void Reactor::wake_sqpoll_if_needed() {
+  if (!ring_->sqpoll_needs_wakeup()) {
+    return;
+  }
+  std::int32_t ret = 0;
+  do {
+    ret = ring_->wake_sqpoll();
+  } while (ret < 0 && errno == EINTR);
+  enforce_precondition(ret >= 0);
+}
+
 void Reactor::flush(std::uint32_t min_complete) {
-  // copy every queued SQE mirror onto the kernel submission queue
+  // copy every queued SQE mirror into a reserved kernel SQE slot
   for (auto& [id, action] : pending_) {
     (void)id;
     if (action->in_ring() && !action->sqe_submitted()) {
-      io_uring_sqe* ksqe = ring_->get_sqe();
+      io_uring_sqe* ksqe = ring_->reserve_sqe();
       if (ksqe == nullptr) {
+        // submission queue full: publish and submit synchronously to free a slot
+        ring_->publish_sqes();
         enter_wait(ring_->pending_sqes(), 0);
-        ksqe = ring_->get_sqe();
+        ksqe = ring_->reserve_sqe();
       }
       // after a submit the submission queue always has room: a nullptr here is a bug
       enforce_invariant(ksqe != nullptr);
       detail::copy_sqe(*ksqe, action->sqe());
       action->set_sqe_submitted();
     }
+  }
+  // publish the filled SQEs to the kernel (SQ tail); with SQPOLL the kernel
+  // thread may start consuming them from this point on
+  ring_->publish_sqes();
+  if (ring_->sqpoll()) {
+    // with SQPOLL the kernel thread consumes the submission queue on its own:
+    // no io_uring_enter is needed to submit, only to wake the thread when it
+    // sleeps (checked after publishing the SQ tail, per the kernel protocol)
+    wake_sqpoll_if_needed();
+    if (min_complete > 0) {
+      enter_wait(0, min_complete);
+    }
+    return;
   }
   const std::uint32_t pending = ring_->pending_sqes();
   if (pending > 0) {

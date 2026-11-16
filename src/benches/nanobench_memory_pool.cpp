@@ -2,48 +2,69 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 #include <ringu/memory_pool.hpp>
 #include <ringu/reactor.hpp>
 
 int main() {
-  ringu::Reactor reactor{1024};
+  auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 1024});
+  if (!reactor_result.has_value()) {
+    throw std::runtime_error(reactor_result.error().message);
+  }
+  auto reactor = std::move(reactor_result).value();
 
   ankerl::nanobench::Bench bench;
   bench.title("ringu memory pool").warmup(2);
 
   bench.run("pool construction (256 x 4KB registered buffers)", [&] {
-    ringu::RegisteredMemoryPool pool{reactor.ring(), 4096, 256};
+    auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), 4096, 256);
+    if (!pool_result.has_value()) {
+      throw std::runtime_error(pool_result.error().message);
+    }
+    auto& pool = *pool_result.value();
     ankerl::nanobench::doNotOptimizeAway(pool.capacity());
   });
 
   bench.run("borrow 256 buffers", [&] {
-    ringu::RegisteredMemoryPool pool{reactor.ring(), 4096, 256};
+    auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), 4096, 256);
+    if (!pool_result.has_value()) {
+      throw std::runtime_error(pool_result.error().message);
+    }
+    auto& pool = *pool_result.value();
     std::vector<ringu::RegisteredBuffer> bufs;
     bufs.reserve(256);
     for (std::int32_t i = 0; i < 256; ++i) {
-      bufs.push_back(pool.borrow());
+      bufs.push_back(pool.borrow().value());
     }
     ankerl::nanobench::doNotOptimizeAway(pool.active_count());
   });
 
   bench.run("borrow + return 1 buffer x1000", [&] {
-    ringu::RegisteredMemoryPool pool{reactor.ring(), 4096, 8};
+    auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), 4096, 8);
+    if (!pool_result.has_value()) {
+      throw std::runtime_error(pool_result.error().message);
+    }
+    auto& pool = *pool_result.value();
     for (std::int32_t i = 0; i < 1000; ++i) {
-      ringu::RegisteredBuffer buf = pool.borrow();
+      ringu::RegisteredBuffer buf = pool.borrow().value();
       ankerl::nanobench::doNotOptimizeAway(buf.data());
     }
     ankerl::nanobench::doNotOptimizeAway(pool.active_count());
   });
 
   bench.run("borrow + return 8 buffers x1000", [&] {
-    ringu::RegisteredMemoryPool pool{reactor.ring(), 4096, 8};
+    auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), 4096, 8);
+    if (!pool_result.has_value()) {
+      throw std::runtime_error(pool_result.error().message);
+    }
+    auto& pool = *pool_result.value();
     for (std::int32_t i = 0; i < 1000; ++i) {
       std::vector<ringu::RegisteredBuffer> bufs;
       bufs.reserve(8);
       for (std::int32_t j = 0; j < 8; ++j) {
-        bufs.push_back(pool.borrow());
+        bufs.push_back(pool.borrow().value());
       }
       ankerl::nanobench::doNotOptimizeAway(pool.active_count());
     }

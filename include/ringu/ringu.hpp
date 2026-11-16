@@ -5,6 +5,7 @@
 #include <ringu/action.hpp>
 #include <ringu/buffer.hpp>
 #include <ringu/contracts.hpp>
+#include <ringu/error.hpp>
 #include <ringu/fd.hpp>
 #include <ringu/memory_pool.hpp>
 #include <ringu/operation_id.hpp>

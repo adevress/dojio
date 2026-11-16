@@ -78,11 +78,11 @@ cd build-agent
 ./nanobench_reactor
 ./nanobench_memory_pool
 
-# UDP ping-pong: reports latency. usage: demo_udp_pingpong [iterations=10000] [payload_size=64]
+# UDP ping-pong: reports latency. usage: demo_udp_pingpong [iterations=10000] [payload_size=64] [sqpoll=1]
 ./demo_udp_pingpong
 
 # TCP hello world: reports throughput.
-# usage: demo_tcp_hello [threads=4] [messages_per_connection=20000] [base_port=24100]
+# usage: demo_tcp_hello [threads=4] [messages_per_connection=20000] [base_port=24100] [sqpoll=1]
 ./demo_tcp_hello
 ```
 

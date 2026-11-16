@@ -2,13 +2,14 @@
 
 #include <ringu/contracts.hpp>
 
+#include <fmt/format.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <cstring>
-#include <stdexcept>
 
 namespace ringu::detail {
 
@@ -42,13 +43,32 @@ void* map_ring(std::int32_t fd, std::uint64_t size, std::uint64_t offset) {
 
 } // namespace
 
-IoUring::IoUring(std::uint32_t entries, std::uint32_t setup_flags) {
+tl::expected<std::unique_ptr<IoUring>, RinguError> IoUring::Create(std::uint32_t entries, std::uint32_t setup_flags,
+                                                                   std::uint32_t sq_thread_idle_ms) {
   enforce_precondition(entries > 0);
   enforce_precondition(entries <= k_max_entries);
+  auto ring = std::unique_ptr<IoUring>(new IoUring());
+  auto setup_result = ring->setup(entries, setup_flags, sq_thread_idle_ms);
+  if (!setup_result.has_value()) {
+    return tl::unexpected(std::move(setup_result).error());
+  }
+  return ring;
+}
+
+tl::expected<void, RinguError> IoUring::setup(std::uint32_t entries, std::uint32_t setup_flags,
+                                              std::uint32_t sq_thread_idle_ms) {
   params_.flags = setup_flags;
+  if ((setup_flags & IORING_SETUP_SQPOLL) != 0) {
+    // SQPOLL thread polling time before it goes to sleep (ms)
+    params_.sq_thread_idle = sq_thread_idle_ms;
+  }
   fd_ = static_cast<std::int32_t>(sys_io_uring_setup(entries, &params_));
   if (fd_ < 0) {
-    throw std::runtime_error("ringu: io_uring_setup failed");
+    // errno is only valid right after the failing syscall: capture it before formatting
+    const int err = errno;
+    return tl::unexpected(
+        RinguError{ErrorOpcode::IoUringSetup,
+                   fmt::format("ringu: io_uring_setup(entries={}) failed: {}", entries, std::strerror(err))});
   }
   sq_mask_ = params_.sq_entries - 1;
   cq_mask_ = params_.cq_entries - 1;
@@ -61,19 +81,27 @@ IoUring::IoUring(std::uint32_t entries, std::uint32_t setup_flags) {
   sqes_ = static_cast<io_uring_sqe*>(
       map_ring(fd_, static_cast<std::uint64_t>(params_.sq_entries) * sizeof(io_uring_sqe), IORING_OFF_SQES));
   if (sq_ring_ == nullptr || cq_ring_ == nullptr || sqes_ == nullptr) {
-    throw std::runtime_error("ringu: io_uring mmap failed");
+    const int err = errno;
+    return tl::unexpected(
+        RinguError{ErrorOpcode::IoUringMmap, fmt::format("ringu: io_uring ring mmap failed: {}", std::strerror(err))});
   }
   auto* sq_base = static_cast<std::uint8_t*>(sq_ring_);
   auto* cq_base = static_cast<std::uint8_t*>(cq_ring_);
   sq_head_ = reinterpret_cast<std::uint32_t*>(sq_base + params_.sq_off.head);
   sq_tail_ = reinterpret_cast<std::uint32_t*>(sq_base + params_.sq_off.tail);
   sq_array_ = reinterpret_cast<std::uint32_t*>(sq_base + params_.sq_off.array);
+  sq_flags_ = reinterpret_cast<std::uint32_t*>(sq_base + params_.sq_off.flags);
   cq_head_ = reinterpret_cast<std::uint32_t*>(cq_base + params_.cq_off.head);
   cq_tail_ = reinterpret_cast<std::uint32_t*>(cq_base + params_.cq_off.tail);
   cqes_ = reinterpret_cast<io_uring_cqe*>(cq_base + params_.cq_off.cqes);
+  return {};
 }
 
 IoUring::~IoUring() {
+  if (fd_ >= 0 && sqpoll()) {
+    // nudge the SQPOLL kernel thread so it observes the ring shutdown promptly
+    (void)sys_io_uring_enter(fd_, 0, 0, IORING_ENTER_SQ_WAKEUP);
+  }
   if (sqes_ != nullptr) {
     ::munmap(sqes_, static_cast<std::size_t>(static_cast<std::uint64_t>(params_.sq_entries) * sizeof(io_uring_sqe)));
   }
@@ -88,28 +116,40 @@ IoUring::~IoUring() {
   }
 }
 
-io_uring_sqe* IoUring::get_sqe() {
+io_uring_sqe* IoUring::reserve_sqe() {
   const std::uint32_t head = std::atomic_ref<std::uint32_t>(*sq_head_).load(std::memory_order_acquire);
-  const std::uint32_t tail = std::atomic_ref<std::uint32_t>(*sq_tail_).load(std::memory_order_relaxed);
-  if (tail - head >= params_.sq_entries) {
+  if (sq_tail_shadow_ - head >= params_.sq_entries) {
     return nullptr;
   }
+  const std::uint32_t tail = sq_tail_shadow_;
+  sq_tail_shadow_ = tail + 1;
   io_uring_sqe* sqe = &sqes_[tail & sq_mask_];
   std::memset(sqe, 0, sizeof(*sqe));
   sq_array_[tail & sq_mask_] = tail & sq_mask_;
-  std::atomic_ref<std::uint32_t>(*sq_tail_).store(tail + 1, std::memory_order_release);
   return sqe;
+}
+
+void IoUring::publish_sqes() {
+  // publish the whole batch at once: the release store orders the SQE contents
+  // and the SQ array writes before the kernel (or the SQPOLL thread) reads them
+  std::atomic_ref<std::uint32_t>(*sq_tail_).store(sq_tail_shadow_, std::memory_order_release);
 }
 
 std::uint32_t IoUring::pending_sqes() const {
   const std::uint32_t head = std::atomic_ref<std::uint32_t>(*sq_head_).load(std::memory_order_acquire);
-  const std::uint32_t tail = std::atomic_ref<std::uint32_t>(*sq_tail_).load(std::memory_order_relaxed);
-  return tail - head;
+  return sq_tail_shadow_ - head;
 }
 
 std::int32_t IoUring::enter(std::uint32_t to_submit, std::uint32_t min_complete, std::uint32_t flags) {
   return static_cast<std::int32_t>(sys_io_uring_enter(fd_, to_submit, min_complete, flags));
 }
+
+bool IoUring::sqpoll_needs_wakeup() const {
+  return sqpoll() &&
+         (std::atomic_ref<std::uint32_t>(*sq_flags_).load(std::memory_order_acquire) & IORING_SQ_NEED_WAKEUP) != 0;
+}
+
+std::int32_t IoUring::wake_sqpoll() { return enter(0, 0, IORING_ENTER_SQ_WAKEUP); }
 
 const io_uring_cqe* IoUring::peek_cqe() const {
   const std::uint32_t head = std::atomic_ref<std::uint32_t>(*cq_head_).load(std::memory_order_relaxed);

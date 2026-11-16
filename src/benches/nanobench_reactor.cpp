@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -35,63 +36,72 @@ int main() {
   const std::string path = make_bench_file();
   const std::int32_t file_fd = static_cast<std::int32_t>(::open(path.c_str(), O_RDONLY));
 
-  ringu::Reactor reactor{1024};
-  ringu::RegisteredMemoryPool pool{reactor.ring(), k_chunk, 256};
+  auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 1024});
+  if (!reactor_result.has_value()) {
+    throw std::runtime_error(reactor_result.error().message);
+  }
+  auto reactor = std::move(reactor_result).value();
+  auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), k_chunk, 256);
+  if (!pool_result.has_value()) {
+    throw std::runtime_error(pool_result.error().message);
+  }
+  auto& pool = *pool_result.value();
 
   ankerl::nanobench::Bench bench;
   bench.title("ringu reactor").unit("op").warmup(2);
 
   bench.run("preads 64x4KB + process(Batch)", [&] {
     for (std::int32_t i = 0; i < k_batch; ++i) {
-      reactor.submit(ringu::pread(ringu::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk),
-                     std::vector<std::byte>(static_cast<std::size_t>(k_chunk)),
-                     [](ringu::Result<std::vector<std::byte>>, ringu::OperationId, std::int32_t) {});
+      reactor->submit(ringu::pread(ringu::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk),
+                      std::vector<std::byte>(static_cast<std::size_t>(k_chunk)),
+                      [](ringu::Result<std::vector<std::byte>>, ringu::OperationId, std::int32_t) {});
     }
-    reactor.process(ringu::Reactor::ProcessMode::Batch);
-    ankerl::nanobench::doNotOptimizeAway(reactor.count_operations(ringu::Reactor::OperationState::Completed));
+    reactor->process(ringu::Reactor::ProcessMode::Batch);
+    ankerl::nanobench::doNotOptimizeAway(reactor->count_operations(ringu::Reactor::OperationState::Completed));
   });
 
   bench.run("preads 64x4KB with registered buffers (READ_FIXED)", [&] {
     for (std::int32_t i = 0; i < k_batch; ++i) {
-      reactor.submit(ringu::pread(ringu::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk),
-                     pool.borrow(), [](ringu::Result<ringu::RegisteredBuffer>, ringu::OperationId, std::int32_t) {});
+      reactor->submit(ringu::pread(ringu::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk),
+                      pool.borrow().value(),
+                      [](ringu::Result<ringu::RegisteredBuffer>, ringu::OperationId, std::int32_t) {});
     }
-    reactor.process(ringu::Reactor::ProcessMode::Batch);
-    ankerl::nanobench::doNotOptimizeAway(reactor.count_operations(ringu::Reactor::OperationState::Completed));
+    reactor->process(ringu::Reactor::ProcessMode::Batch);
+    ankerl::nanobench::doNotOptimizeAway(reactor->count_operations(ringu::Reactor::OperationState::Completed));
   });
 
   bench.run("open+close churn 64x", [&] {
     std::vector<std::int32_t> fds;
     fds.reserve(k_batch);
     for (std::int32_t i = 0; i < k_batch; ++i) {
-      reactor.submit(ringu::open_at(path, O_RDONLY, 0),
-                     [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
-                       if (r.has_value()) {
-                         fds.push_back(r->value());
-                       }
-                     });
+      reactor->submit(ringu::open_at(path, O_RDONLY, 0),
+                      [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+                        if (r.has_value()) {
+                          fds.push_back(r->value());
+                        }
+                      });
     }
-    reactor.process(ringu::Reactor::ProcessMode::Batch);
+    reactor->process(ringu::Reactor::ProcessMode::Batch);
     for (const std::int32_t fd : fds) {
-      reactor.submit(ringu::close(ringu::FileDescriptor{fd}),
-                     [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+      reactor->submit(ringu::close(ringu::FileDescriptor{fd}),
+                      [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
     }
-    reactor.process(ringu::Reactor::ProcessMode::Batch);
+    reactor->process(ringu::Reactor::ProcessMode::Batch);
     ankerl::nanobench::doNotOptimizeAway(fds.size());
   });
 
   bench.run("timer submit + cancel + process", [&] {
-    const ringu::OperationId id = reactor.submit(
+    const ringu::OperationId id = reactor->submit(
         ringu::Timer{std::chrono::seconds(60)}, [](ringu::Result<std::monostate>, ringu::OperationId, std::int32_t) {});
-    reactor.cancel(id);
-    reactor.process(ringu::Reactor::ProcessMode::Batch);
-    ankerl::nanobench::doNotOptimizeAway(reactor.count_operations(ringu::Reactor::OperationState::Failed));
+    reactor->cancel(id);
+    reactor->process(ringu::Reactor::ProcessMode::Batch);
+    ankerl::nanobench::doNotOptimizeAway(reactor->count_operations(ringu::Reactor::OperationState::Failed));
   });
 
   bench.run("count_operations", [&] {
-    ankerl::nanobench::doNotOptimizeAway(reactor.count_operations(ringu::Reactor::OperationState::Pending));
-    ankerl::nanobench::doNotOptimizeAway(reactor.count_operations(ringu::Reactor::OperationState::Completed));
-    ankerl::nanobench::doNotOptimizeAway(reactor.count_operations(ringu::Reactor::OperationState::Failed));
+    ankerl::nanobench::doNotOptimizeAway(reactor->count_operations(ringu::Reactor::OperationState::Pending));
+    ankerl::nanobench::doNotOptimizeAway(reactor->count_operations(ringu::Reactor::OperationState::Completed));
+    ankerl::nanobench::doNotOptimizeAway(reactor->count_operations(ringu::Reactor::OperationState::Failed));
   });
 
   ::close(file_fd);
