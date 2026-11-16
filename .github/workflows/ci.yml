@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NIX_CONFIG: 'experimental-features = nix-command flakes'
+  # pinned nixpkgs, same rev as the Taskfile (provides clang-tools/clang-format 18)
+  NIXPKGS_REV: '5646423bfac84ec68dfc60f2a322e627ef0d6a95'
+
+jobs:
+  # (1) run nix-format (clang-format 18 from the pinned nixpkgs) and fail if
+  # the working tree is not already formatted
+  nix-format:
+    name: nix-format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+      - name: Run nix-format and fail if anything is reformatted
+        run: |
+          nix shell "github:NixOS/nixpkgs/${{ env.NIXPKGS_REV }}#go-task" --command task nix-format
+          git diff --exit-code
+
+  # (2) + (3) build with gcc and with clang through nix, then run the tests
+  # and the benchmarks
+  build-test-bench:
+    name: ${{ matrix.compiler.name }} build + tests + benches
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - name: gcc
+            nix_pkg: gcc
+            cc: gcc
+            cxx: g++
+          - name: clang
+            nix_pkg: llvmPackages_18.clang
+            cc: clang
+            cxx: clang++
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+      - name: Configure, build, test and bench with ${{ matrix.compiler.name }} via nix
+        run: |
+          nix shell \
+            "github:NixOS/nixpkgs/${{ env.NIXPKGS_REV }}#${{ matrix.compiler.nix_pkg }}" \
+            "github:NixOS/nixpkgs/${{ env.NIXPKGS_REV }}#cmake" \
+            "github:NixOS/nixpkgs/${{ env.NIXPKGS_REV }}#ninja" \
+            "github:NixOS/nixpkgs/${{ env.NIXPKGS_REV }}#git" \
+            "github:NixOS/nixpkgs/${{ env.NIXPKGS_REV }}#cacert" \
+            --command sh -c '
+              set -e
+              build_dir="build-ci-${{ matrix.compiler.name }}"
+              cmake -G Ninja -S . -B "$build_dir" \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DRINGU_LTO_OPT=OFF \
+                -DCMAKE_C_COMPILER="${{ matrix.compiler.cc }}" \
+                -DCMAKE_CXX_COMPILER="${{ matrix.compiler.cxx }}"
+              cmake --build "$build_dir"
+              ctest --test-dir "$build_dir" --output-on-failure
+              "$build_dir/src/nanobench_reactor"
+              "$build_dir/src/nanobench_memory_pool"
+            '

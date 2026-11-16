@@ -1,5 +1,7 @@
 # ringu
 
+[![CI](https://img.shields.io/github/actions/workflow/status/adevress/ringu/ci.yml?branch=main&label=CI)](https://github.com/adevress/ringu/actions/workflows/ci.yml)
+
 A high-performance io_uring interface for modern C++20.
 
 ## Summary
