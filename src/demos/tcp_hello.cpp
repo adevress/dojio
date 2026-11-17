@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
     const std::int32_t lfd = sock->value();
     const std::int32_t one = 1;
     ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    // bind through the RingEngine (inline Bind operation)
+    // bind through the engine (inline Bind operation)
     bool bound = false;
     engine->submit(ringu::bind(ringu::FileDescriptor{lfd}, ringu::Ipv4Endpoint::loopback(base_port)),
                    [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
       fmt::print(stderr, "server: bind failed\n");
       std::exit(1);
     }
-    // listen through the RingEngine (inline Listen operation)
+    // listen through the engine (inline Listen operation)
     bool listened = false;
     engine->submit(ringu::listen(ringu::FileDescriptor{lfd}, 128),
                    [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
         std::exit(1);
       }
       const std::int32_t fd = sock->value();
-      // connect through the RingEngine with the Connect operation
+      // connect through the engine with the Connect operation
       const auto endpoint = ringu::Ipv4Endpoint::loopback(base_port);
       bool connected = false;
       for (std::int32_t tries = 0; tries < 10000 && !connected; ++tries) {
