@@ -81,6 +81,8 @@ inline PwriteOp pwrite(FileDescriptor fd, std::uint64_t offset) { return PwriteO
 /// No io_uring opcode exists for lseek: the RingEngine executes it synchronously
 /// when the current batch is processed.
 struct LseekOp {
+  static constexpr bool is_inline = true;
+
   FileDescriptor fd;
   std::int64_t offset = 0;
   std::int32_t whence = 0;
@@ -115,6 +117,8 @@ inline CloseOp close(FileDescriptor fd) { return CloseOp{fd}; }
 /// No io_uring opcode exists for listen: the RingEngine executes it synchronously
 /// when the current batch is processed.
 struct ListenOp {
+  static constexpr bool is_inline = true;
+
   FileDescriptor fd;
   std::int32_t backlog = 0;
 };
@@ -178,6 +182,8 @@ inline FsyncOp fsync(FileDescriptor fd, bool use_datasync = false) { return Fsyn
 /// The sockaddr_in / sockaddr_in6 is stored inside the operation (static buffer),
 /// so no C socket type appears in the public API.
 struct BindOp {
+  static constexpr bool is_inline = true;
+
   FileDescriptor fd;
   std::variant<Ipv4Endpoint, Ipv6Endpoint> endpoint;
   StaticBuffer<k_sockaddr_storage_size> addr{}; // sockaddr_in / sockaddr_in6 storage, filled by the factory
@@ -246,10 +252,9 @@ inline constexpr bool uses_buffer_v =
     std::is_same_v<std::decay_t<Op>, SendOp> || std::is_same_v<std::decay_t<Op>, RecvOp>;
 
 /// True for the operations that have no io_uring opcode and are therefore executed
-/// synchronously by the RingEngine when the current batch is processed.
+/// synchronously by the RingEngine when the current batch is processed. An operation
+/// opts in by declaring a `static constexpr bool is_inline = true` tag member.
 template <typename Op>
-inline constexpr bool is_inline_v =
-    std::is_same_v<std::decay_t<Op>, LseekOp> || std::is_same_v<std::decay_t<Op>, ListenOp> ||
-    std::is_same_v<std::decay_t<Op>, BindOp>;
+concept InlineOperation = std::decay_t<Op>::is_inline;
 
 } // namespace ringu

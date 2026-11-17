@@ -103,10 +103,6 @@ public:
   /// The SQE mirror of this action, copied onto the kernel ring by the RingEngine.
   [[nodiscard]] Sqe& sqe() { return sqe_; }
 
-  /// True once the operation is destined for the io_uring ring (not inline).
-  [[nodiscard]] bool in_ring() const { return in_ring_; }
-  void set_in_ring() { in_ring_ = true; }
-
   /// True once the SQE mirror has been copied onto the kernel submission queue.
   [[nodiscard]] bool sqe_submitted() const { return sqe_submitted_; }
   void set_sqe_submitted() { sqe_submitted_ = true; }
@@ -117,7 +113,6 @@ public:
 private:
   OperationId id_;
   bool timer_;
-  bool in_ring_ = false;
   bool sqe_submitted_ = false;
   Sqe sqe_{};
 };
@@ -135,7 +130,7 @@ public:
   Action(OperationId id, Op op, Buffer buffer, Callback callback, bool timer)
       : ActionBase(id, timer), op_(std::move(op)), buffer_(std::move(buffer)), callback_(std::move(callback)) {}
 
-  [[nodiscard]] bool is_inline() const override { return is_inline_v<Op>; }
+  [[nodiscard]] bool is_inline() const override { return InlineOperation<Op>; }
 
   std::int32_t execute_inline() override {
     if constexpr (std::is_same_v<Op, LseekOp>) {

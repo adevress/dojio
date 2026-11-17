@@ -46,7 +46,7 @@ bool RingEngine::cancel(OperationId id) {
     return false;
   }
   ActionBase& action = *it->second;
-  if (!action.in_ring()) {
+  if (action.is_inline()) {
     // inline operation (lseek/listen) not executed yet: cancel it directly
     dispatch(id.value, -ECANCELED);
     return true;
@@ -94,7 +94,7 @@ void RingEngine::flush(std::uint32_t min_complete) {
   // copy every queued SQE mirror into a reserved kernel SQE slot
   for (auto& [id, action] : pending_) {
     (void)id;
-    if (action->in_ring() && !action->sqe_submitted()) {
+    if (!action->is_inline() && !action->sqe_submitted()) {
       io_uring_sqe* ksqe = ring_->reserve_sqe();
       if (ksqe == nullptr) {
         // submission queue full: publish and submit synchronously to free a slot
@@ -133,7 +133,7 @@ void RingEngine::run_inline_pending() {
   std::vector<std::pair<std::unique_ptr<ActionBase>, std::int32_t>> done;
   for (auto it = pending_.begin(); it != pending_.end();) {
     ActionBase& action = *it->second;
-    if (!action.in_ring() && action.is_inline()) {
+    if (action.is_inline()) {
       auto owned = std::move(it->second);
       const std::int32_t res = owned->execute_inline();
       done.emplace_back(std::move(owned), res);
@@ -172,7 +172,7 @@ void RingEngine::dispatch(std::uint64_t id, std::int32_t res) {
 }
 
 void RingEngine::finish(ActionBase& action, std::int32_t res) {
-  if (action.in_ring() && in_flight_ > 0) {
+  if (!action.is_inline() && in_flight_ > 0) {
     in_flight_ -= 1;
   }
   // a fired timer (-ETIME) counts as a successful completion

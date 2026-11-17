@@ -155,7 +155,6 @@ private:
       // fill the SQE mirror now; the RingEngine copies it onto the kernel ring at flush
       action->fill();
       action->sqe().user_data = id.value;
-      action->set_in_ring();
       in_flight_ += 1;
     }
     pending_.emplace(id.value, std::move(action));
