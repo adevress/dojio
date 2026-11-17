@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include <tl/expected.hpp>
 
@@ -31,13 +32,13 @@ namespace ringu {
 /// Options controlling how a RingEngine's underlying io_uring instance is set up.
 struct RingEngineOptions {
   /// Number of entries of the submission / completion rings.
-  std::uint32_t entries = 256;
+  std::uint32_t entries = 1024;
   /// Create the ring with IORING_SETUP_SQPOLL: a kernel thread polls the
   /// submission queue, so submitting operations does not require an
   /// io_uring_enter(2) syscall per batch (lower submission latency and CPU
   /// usage). Enabled by default; requires a kernel and privileges allowing
   /// SQPOLL.
-  bool sqpoll = true;
+  bool sqpoll = false;
   /// How long the SQPOLL kernel thread keeps polling the submission queue for
   /// new SQEs before going to sleep (io_uring_params.sq_thread_idle), in
   /// milliseconds. Only used when sqpoll is enabled. Default: 2000 ms.
@@ -180,6 +181,11 @@ private:
   std::unique_ptr<detail::IoUring> ring_;
   std::pmr::unsynchronized_pool_resource pool_resource_;
   std::pmr::unordered_map<std::uint64_t, std::unique_ptr<ActionBase>> pending_;
+  // Scratch buffers for the dispatch loops, preallocated once from the ring
+  // size in the constructor so run_inline_pending()/reap_and_dispatch() never
+  // reallocate on the hot path.
+  std::vector<std::pair<std::unique_ptr<ActionBase>, std::int32_t>> done_inline_;
+  std::vector<std::pair<std::uint64_t, std::int32_t>> done_cq_;
   std::uint64_t next_id_ = 1;
   std::uint64_t in_flight_ = 0;
   std::uint64_t completed_ = 0;

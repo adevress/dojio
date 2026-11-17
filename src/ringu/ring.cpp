@@ -152,7 +152,7 @@ bool IoUring::sqpoll_needs_wakeup() const {
 std::int32_t IoUring::wake_sqpoll() { return enter(0, 0, IORING_ENTER_SQ_WAKEUP); }
 
 const io_uring_cqe* IoUring::peek_cqe() const {
-  const std::uint32_t head = std::atomic_ref<std::uint32_t>(*cq_head_).load(std::memory_order_relaxed);
+  const std::uint32_t head = std::atomic_ref<std::uint32_t>(*cq_head_).load(std::memory_order_acquire);
   const std::uint32_t tail = std::atomic_ref<std::uint32_t>(*cq_tail_).load(std::memory_order_acquire);
   if (head == tail) {
     return nullptr;
@@ -161,7 +161,7 @@ const io_uring_cqe* IoUring::peek_cqe() const {
 }
 
 void IoUring::cq_advance(std::uint32_t n) {
-  const std::uint32_t head = std::atomic_ref<std::uint32_t>(*cq_head_).load(std::memory_order_relaxed);
+  const std::uint32_t head = std::atomic_ref<std::uint32_t>(*cq_head_).load(std::memory_order_acquire);
   std::atomic_ref<std::uint32_t>(*cq_head_).store(head + n, std::memory_order_release);
 }
 

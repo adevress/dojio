@@ -5,7 +5,7 @@
 // connection to their server thread. Each round trip: the client sends "hello",
 // the server replies "world". The demo reports the aggregate throughput.
 //
-// usage: demo_tcp_hello [threads=4] [messages_per_connection=20000] [base_port=24100] [sqpoll=1]
+// usage: demo_tcp_hello [threads=4] [messages_per_connection=20000] [base_port=24100] 
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
   const std::int32_t num_threads = argc > 1 ? static_cast<std::int32_t>(std::atoi(argv[1])) : 4;
   const std::int32_t messages = argc > 2 ? static_cast<std::int32_t>(std::atoi(argv[2])) : 20000;
   const std::uint16_t base_port = argc > 3 ? static_cast<std::uint16_t>(std::atoi(argv[3])) : 24100;
-  const bool sqpoll = argc > 4 ? std::atoi(argv[4]) != 0 : true; // SQPOLL on by default
+  const bool sqpoll = false;
   const ringu::RingEngineOptions engine_opts{.entries = 1024, .sqpoll = sqpoll};
 
   std::atomic<std::int32_t> ready{0};

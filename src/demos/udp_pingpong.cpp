@@ -2,7 +2,7 @@
 // single ringu::RingEngine. Each datagram goes client -> server -> client; the demo
 // reports the round-trip latency distribution.
 //
-// usage: demo_udp_pingpong [iterations=10000] [payload_size=64] [sqpoll=1]
+// usage: demo_udp_pingpong [iterations=10000] [payload_size=64]
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -66,7 +66,7 @@ std::int32_t make_udp_socket(ringu::RingEngine& engine, sockaddr_in& bound_addr)
 int main(int argc, char** argv) { // main() signature is the C runtime ABI
   const std::int32_t iterations = argc > 1 ? static_cast<std::int32_t>(std::atoi(argv[1])) : 10000;
   const std::uint64_t payload_size = argc > 2 ? static_cast<std::uint64_t>(std::atoi(argv[2])) : 64;
-  const bool sqpoll = argc > 3 ? std::atoi(argv[3]) != 0 : true; // SQPOLL on by default
+  const bool sqpoll = false;
 
   auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 256, .sqpoll = sqpoll});
   if (!ring_engine_result.has_value()) {

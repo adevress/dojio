@@ -25,7 +25,13 @@ tl::expected<std::unique_ptr<RingEngine>, RinguError> RingEngine::create(RingEng
   return std::unique_ptr<RingEngine>(new RingEngine(std::move(ring).value()));
 }
 
-RingEngine::RingEngine(std::unique_ptr<detail::IoUring> ring) : ring_(std::move(ring)), pending_(&pool_resource_) {}
+RingEngine::RingEngine(std::unique_ptr<detail::IoUring> ring) : ring_(std::move(ring)), pending_(&pool_resource_) {
+  // preallocate the dispatch scratch buffers from the ring size: the completion
+  // ring can hold at most cq_entries events at once, and the submission ring
+  // bounds the number of queued operations
+  done_cq_.reserve(ring_->cq_entries());
+  done_inline_.reserve(ring_->sq_entries());
+}
 
 RingEngine::~RingEngine() = default;
 
@@ -130,30 +136,33 @@ void RingEngine::flush(std::uint32_t min_complete) {
 }
 
 void RingEngine::run_inline_pending() {
-  std::vector<std::pair<std::unique_ptr<ActionBase>, std::int32_t>> done;
+  done_inline_.clear();
   for (auto it = pending_.begin(); it != pending_.end();) {
     ActionBase& action = *it->second;
     if (action.is_inline()) {
       auto owned = std::move(it->second);
       const std::int32_t res = owned->execute_inline();
-      done.emplace_back(std::move(owned), res);
+      done_inline_.emplace_back(std::move(owned), res);
       it = pending_.erase(it);
     } else {
       ++it;
     }
   }
-  for (auto& [action, res] : done) {
+  for (auto& [action, res] : done_inline_) {
     finish(*action, res);
   }
+  // destroy the completed actions now (as a local vector would) and keep the
+  // reserved capacity for the next call
+  done_inline_.clear();
 }
 
 void RingEngine::reap_and_dispatch() {
-  std::vector<std::pair<std::uint64_t, std::int32_t>> done;
+  done_cq_.clear();
   while (const io_uring_cqe* cqe = ring_->peek_cqe()) {
-    done.emplace_back(cqe->user_data, cqe->res);
+    done_cq_.emplace_back(cqe->user_data, cqe->res);
     ring_->cq_advance();
   }
-  for (const auto& [id, res] : done) {
+  for (const auto& [id, res] : done_cq_) {
     if (id == k_cancel_user_data) {
       continue;
     }
