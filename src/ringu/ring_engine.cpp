@@ -26,11 +26,10 @@ tl::expected<std::unique_ptr<RingEngine>, RinguError> RingEngine::create(RingEng
 }
 
 RingEngine::RingEngine(std::unique_ptr<detail::IoUring> ring) : ring_(std::move(ring)), pending_(&pool_resource_) {
-  // preallocate the dispatch scratch buffers from the ring size: the completion
+  // preallocate the dispatch scratch buffer from the ring size: the completion
   // ring can hold at most cq_entries events at once, and the submission ring
   // bounds the number of queued operations
-  done_cq_.reserve(ring_->cq_entries());
-  done_inline_.reserve(ring_->sq_entries());
+  done_.reserve(ring_->cq_entries() + ring_->sq_entries());
 }
 
 RingEngine::~RingEngine() = default;
@@ -136,38 +135,50 @@ void RingEngine::flush(std::uint32_t min_complete) {
 }
 
 void RingEngine::run_inline_pending() {
-  done_inline_.clear();
+  done_.clear();
   for (auto it = pending_.begin(); it != pending_.end();) {
     ActionBase& action = *it->second;
     if (action.is_inline()) {
       auto owned = std::move(it->second);
       const std::int32_t res = owned->execute_inline();
-      done_inline_.emplace_back(std::move(owned), res);
+      done_.emplace_back(std::move(owned), res);
       it = pending_.erase(it);
     } else {
       ++it;
     }
   }
-  for (auto& [action, res] : done_inline_) {
+  for (auto& [action, res] : done_) {
     finish(*action, res);
   }
   // destroy the completed actions now (as a local vector would) and keep the
   // reserved capacity for the next call
-  done_inline_.clear();
+  done_.clear();
 }
 
 void RingEngine::reap_and_dispatch() {
-  done_cq_.clear();
+  done_.clear();
   while (const io_uring_cqe* cqe = ring_->peek_cqe()) {
-    done_cq_.emplace_back(cqe->user_data, cqe->res);
+    const std::uint64_t id = cqe->user_data;
+    const std::int32_t res = cqe->res;
     ring_->cq_advance();
-  }
-  for (const auto& [id, res] : done_cq_) {
     if (id == k_cancel_user_data) {
       continue;
     }
-    dispatch(id, res);
+    // extract the action from pending_ now (as run_inline_pending does), so
+    // the loop below only has to run the completion handlers
+    const auto it = pending_.find(id);
+    if (it == pending_.end()) {
+      continue;
+    }
+    done_.emplace_back(std::move(it->second), res);
+    pending_.erase(it);
   }
+  for (auto& [action, res] : done_) {
+    finish(*action, res);
+  }
+  // destroy the completed actions now (as a local vector would) and keep the
+  // reserved capacity for the next call
+  done_.clear();
 }
 
 void RingEngine::dispatch(std::uint64_t id, std::int32_t res) {

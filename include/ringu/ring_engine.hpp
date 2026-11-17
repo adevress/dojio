@@ -36,7 +36,7 @@ struct RingEngineOptions {
   /// Create the ring with IORING_SETUP_SQPOLL: a kernel thread polls the
   /// submission queue, so submitting operations does not require an
   /// io_uring_enter(2) syscall per batch (lower submission latency and CPU
-  /// usage). Enabled by default; requires a kernel and privileges allowing
+  /// usage). Disabled by default; requires a kernel and privileges allowing
   /// SQPOLL.
   bool sqpoll = false;
   /// How long the SQPOLL kernel thread keeps polling the submission queue for
@@ -73,8 +73,8 @@ public:
     Failed     ///< failed (an I/O error code, or a cancellation)
   };
 
-  /// Creates a RingEngine with the given options (SQPOLL enabled, 2000 ms poll
-  /// time by default). The constructor is private: use create().
+  /// Creates a RingEngine with the given options (SQPOLL disabled by default,
+  /// 2000 ms poll time when enabled). The constructor is private: use create().
   ///
   /// Returns a RinguError (opcode + message) when the underlying io_uring ring
   /// cannot be created (io_uring_setup(2) or ring mmap failure) instead of
@@ -181,11 +181,11 @@ private:
   std::unique_ptr<detail::IoUring> ring_;
   std::pmr::unsynchronized_pool_resource pool_resource_;
   std::pmr::unordered_map<std::uint64_t, std::unique_ptr<ActionBase>> pending_;
-  // Scratch buffers for the dispatch loops, preallocated once from the ring
+  // Scratch buffer for the dispatch loops, preallocated once from the ring
   // size in the constructor so run_inline_pending()/reap_and_dispatch() never
-  // reallocate on the hot path.
-  std::vector<std::pair<std::unique_ptr<ActionBase>, std::int32_t>> done_inline_;
-  std::vector<std::pair<std::uint64_t, std::int32_t>> done_cq_;
+  // reallocate on the hot path. Both loops extract the completed actions from
+  // pending_ into it before running the completion handlers.
+  std::vector<std::pair<std::unique_ptr<ActionBase>, std::int32_t>> done_;
   std::uint64_t next_id_ = 1;
   std::uint64_t in_flight_ = 0;
   std::uint64_t completed_ = 0;
