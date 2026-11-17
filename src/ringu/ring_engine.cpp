@@ -1,4 +1,4 @@
-#include <ringu/reactor.hpp>
+#include <ringu/ring_engine.hpp>
 
 #include <ringu/contracts.hpp>
 #include <ringu/ring.hpp>
@@ -15,29 +15,29 @@ namespace {
 inline constexpr std::uint64_t k_cancel_user_data = ~static_cast<std::uint64_t>(0);
 } // namespace
 
-tl::expected<std::unique_ptr<Reactor>, RinguError> Reactor::Create(ReactorOptions options) {
+tl::expected<std::unique_ptr<RingEngine>, RinguError> RingEngine::create(RingEngineOptions options) {
   auto ring =
-      detail::IoUring::Create(options.entries, options.sqpoll ? IORING_SETUP_SQPOLL : 0u,
+      detail::IoUring::create(options.entries, options.sqpoll ? IORING_SETUP_SQPOLL : 0u,
                               options.sqpoll ? static_cast<std::uint32_t>(options.sqpoll_poll_time.count()) : 0u);
   if (!ring.has_value()) {
     return tl::unexpected(std::move(ring).error());
   }
-  return std::unique_ptr<Reactor>(new Reactor(std::move(ring).value()));
+  return std::unique_ptr<RingEngine>(new RingEngine(std::move(ring).value()));
 }
 
-Reactor::Reactor(std::unique_ptr<detail::IoUring> ring) : ring_(std::move(ring)), pending_(&pool_resource_) {}
+RingEngine::RingEngine(std::unique_ptr<detail::IoUring> ring) : ring_(std::move(ring)), pending_(&pool_resource_) {}
 
-Reactor::~Reactor() = default;
+RingEngine::~RingEngine() = default;
 
-std::int32_t Reactor::ring_fd() const { return ring_->fd(); }
+std::int32_t RingEngine::ring_fd() const { return ring_->fd(); }
 
-bool Reactor::sqpoll_enabled() const { return ring_->sqpoll(); }
+bool RingEngine::sqpoll_enabled() const { return ring_->sqpoll(); }
 
-std::chrono::milliseconds Reactor::sqpoll_poll_time() const {
+std::chrono::milliseconds RingEngine::sqpoll_poll_time() const {
   return std::chrono::milliseconds(ring_->params().sq_thread_idle);
 }
 
-bool Reactor::cancel(OperationId id) {
+bool RingEngine::cancel(OperationId id) {
   if (id.value == 0) {
     return false;
   }
@@ -68,7 +68,7 @@ bool Reactor::cancel(OperationId id) {
   return true;
 }
 
-std::int32_t Reactor::enter_wait(std::uint32_t to_submit, std::uint32_t min_complete) {
+std::int32_t RingEngine::enter_wait(std::uint32_t to_submit, std::uint32_t min_complete) {
   std::int32_t ret = 0;
   do {
     ret = ring_->enter(to_submit, min_complete, IORING_ENTER_GETEVENTS);
@@ -79,7 +79,7 @@ std::int32_t Reactor::enter_wait(std::uint32_t to_submit, std::uint32_t min_comp
   return ret;
 }
 
-void Reactor::wake_sqpoll_if_needed() {
+void RingEngine::wake_sqpoll_if_needed() {
   if (!ring_->sqpoll_needs_wakeup()) {
     return;
   }
@@ -90,7 +90,7 @@ void Reactor::wake_sqpoll_if_needed() {
   enforce_precondition(ret >= 0);
 }
 
-void Reactor::flush(std::uint32_t min_complete) {
+void RingEngine::flush(std::uint32_t min_complete) {
   // copy every queued SQE mirror into a reserved kernel SQE slot
   for (auto& [id, action] : pending_) {
     (void)id;
@@ -129,7 +129,7 @@ void Reactor::flush(std::uint32_t min_complete) {
   }
 }
 
-void Reactor::run_inline_pending() {
+void RingEngine::run_inline_pending() {
   std::vector<std::pair<std::unique_ptr<ActionBase>, std::int32_t>> done;
   for (auto it = pending_.begin(); it != pending_.end();) {
     ActionBase& action = *it->second;
@@ -147,7 +147,7 @@ void Reactor::run_inline_pending() {
   }
 }
 
-void Reactor::reap_and_dispatch() {
+void RingEngine::reap_and_dispatch() {
   std::vector<std::pair<std::uint64_t, std::int32_t>> done;
   while (const io_uring_cqe* cqe = ring_->peek_cqe()) {
     done.emplace_back(cqe->user_data, cqe->res);
@@ -161,7 +161,7 @@ void Reactor::reap_and_dispatch() {
   }
 }
 
-void Reactor::dispatch(std::uint64_t id, std::int32_t res) {
+void RingEngine::dispatch(std::uint64_t id, std::int32_t res) {
   const auto it = pending_.find(id);
   if (it == pending_.end()) {
     return;
@@ -171,7 +171,7 @@ void Reactor::dispatch(std::uint64_t id, std::int32_t res) {
   finish(*action, res);
 }
 
-void Reactor::finish(ActionBase& action, std::int32_t res) {
+void RingEngine::finish(ActionBase& action, std::int32_t res) {
   if (action.in_ring() && in_flight_ > 0) {
     in_flight_ -= 1;
   }
@@ -185,7 +185,7 @@ void Reactor::finish(ActionBase& action, std::int32_t res) {
   action.complete(res);
 }
 
-void Reactor::process(ProcessMode mode) {
+void RingEngine::process(ProcessMode mode) {
   stop_requested_ = false;
   for (;;) {
     run_inline_pending();
@@ -212,7 +212,7 @@ void Reactor::process(ProcessMode mode) {
   }
 }
 
-std::uint64_t Reactor::count_operations(OperationState state) const {
+std::uint64_t RingEngine::count_operations(OperationState state) const {
   switch (state) {
   case OperationState::Pending:
     return static_cast<std::uint64_t>(pending_.size());

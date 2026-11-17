@@ -43,7 +43,7 @@ void* map_ring(std::int32_t fd, std::uint64_t size, std::uint64_t offset) {
 
 } // namespace
 
-tl::expected<std::unique_ptr<IoUring>, RinguError> IoUring::Create(std::uint32_t entries, std::uint32_t setup_flags,
+tl::expected<std::unique_ptr<IoUring>, RinguError> IoUring::create(std::uint32_t entries, std::uint32_t setup_flags,
                                                                    std::uint32_t sq_thread_idle_ms) {
   enforce_precondition(entries > 0);
   enforce_precondition(entries <= k_max_entries);

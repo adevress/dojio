@@ -11,7 +11,7 @@
 #include <vector>
 
 #include <ringu/memory_pool.hpp>
-#include <ringu/reactor.hpp>
+#include <ringu/ring_engine.hpp>
 
 namespace {
 
@@ -24,11 +24,11 @@ ringu::RegisteredBuffer borrow_or_fail(ringu::RegisteredMemoryPool& pool) {
 
 } // namespace
 
-TEST_CASE("RegisteredMemoryPool::Create returns a tl::expected carrying the pool or a RinguError") {
-  auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64});
-  REQUIRE(reactor_result.has_value());
-  auto reactor = std::move(reactor_result).value();
-  auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), 4096, 4);
+TEST_CASE("RegisteredMemoryPool::create returns a tl::expected carrying the pool or a RinguError") {
+  auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
+  auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 4096, 4);
   REQUIRE(pool_result.has_value());
   CHECK(pool_result.value()->capacity() == 4);
   CHECK(pool_result.value()->buffer_size() == 4096);
@@ -36,10 +36,10 @@ TEST_CASE("RegisteredMemoryPool::Create returns a tl::expected carrying the pool
 }
 
 TEST_CASE("RegisteredMemoryPool borrow/return tracks the active counter") {
-  auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64});
-  REQUIRE(reactor_result.has_value());
-  auto reactor = std::move(reactor_result).value();
-  auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), 4096, 8);
+  auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
+  auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 4096, 8);
   REQUIRE(pool_result.has_value());
   auto& pool = *pool_result.value();
   CHECK(pool.capacity() == 8);
@@ -64,10 +64,10 @@ TEST_CASE("RegisteredMemoryPool borrow/return tracks the active counter") {
 }
 
 TEST_CASE("chunks are cache-line aligned even when buffer_size is not a multiple of it") {
-  auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64});
-  REQUIRE(reactor_result.has_value());
-  auto reactor = std::move(reactor_result).value();
-  auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), 100, 4);
+  auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
+  auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 100, 4);
   REQUIRE(pool_result.has_value());
   auto& pool = *pool_result.value();
   constexpr std::size_t cache_line = ringu::cache_line_size();
@@ -82,10 +82,10 @@ TEST_CASE("chunks are cache-line aligned even when buffer_size is not a multiple
 }
 
 TEST_CASE("RegisteredMemoryPool exhaustion returns a RinguError and buffers are reusable") {
-  auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64});
-  REQUIRE(reactor_result.has_value());
-  auto reactor = std::move(reactor_result).value();
-  auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), 64, 4);
+  auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
+  auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 64, 4);
   REQUIRE(pool_result.has_value());
   auto& pool = *pool_result.value();
   std::vector<ringu::RegisteredBuffer> bufs;
@@ -105,10 +105,10 @@ TEST_CASE("RegisteredMemoryPool exhaustion returns a RinguError and buffers are 
 }
 
 TEST_CASE("RegisteredBuffer move semantics transfer ownership") {
-  auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64});
-  REQUIRE(reactor_result.has_value());
-  auto reactor = std::move(reactor_result).value();
-  auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), 128, 2);
+  auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
+  auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 128, 2);
   REQUIRE(pool_result.has_value());
   auto& pool = *pool_result.value();
   ringu::RegisteredBuffer a = borrow_or_fail(pool);
@@ -121,9 +121,9 @@ TEST_CASE("RegisteredBuffer move semantics transfer ownership") {
 }
 
 TEST_CASE("RegisteredBuffer is usable as an io_uring fixed buffer for read") {
-  auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 64});
-  REQUIRE(reactor_result.has_value());
-  auto reactor = std::move(reactor_result).value();
+  auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
   // prepare a file with known content
   const std::string path = "/tmp/ringu_pool_test_file";
   {
@@ -134,32 +134,32 @@ TEST_CASE("RegisteredBuffer is usable as an io_uring fixed buffer for read") {
     ::close(fd);
   }
   ringu::FileDescriptor fd{-1};
-  reactor->submit(ringu::open_at(path, O_RDONLY, 0),
-                  [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
-                    REQUIRE(r.has_value());
-                    fd = *r;
-                  });
-  reactor->process(ringu::Reactor::ProcessMode::Batch);
+  engine->submit(ringu::open_at(path, O_RDONLY, 0),
+                 [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+                   REQUIRE(r.has_value());
+                   fd = *r;
+                 });
+  engine->process(ringu::RingEngine::ProcessMode::Batch);
   REQUIRE(fd.value() >= 0);
 
-  auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), 4096, 4);
+  auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 4096, 4);
   REQUIRE(pool_result.has_value());
   auto& pool = *pool_result.value();
   std::vector<std::byte> out;
-  reactor->submit(ringu::pread(fd, 0), borrow_or_fail(pool),
-                  [&](ringu::Result<ringu::RegisteredBuffer> r, ringu::OperationId, std::int32_t res) {
-                    REQUIRE(r.has_value());
-                    CHECK(res == 20);
-                    const auto& buf = *r;
-                    out.assign(buf.data(), buf.data() + res);
-                  });
-  reactor->process(ringu::Reactor::ProcessMode::Batch);
+  engine->submit(ringu::pread(fd, 0), borrow_or_fail(pool),
+                 [&](ringu::Result<ringu::RegisteredBuffer> r, ringu::OperationId, std::int32_t res) {
+                   REQUIRE(r.has_value());
+                   CHECK(res == 20);
+                   const auto& buf = *r;
+                   out.assign(buf.data(), buf.data() + res);
+                 });
+  engine->process(ringu::RingEngine::ProcessMode::Batch);
   CHECK(out.size() == 20);
   CHECK(std::memcmp(out.data(), "fixed-buffer-content", 20) == 0);
-  CHECK(reactor->count_operations(ringu::Reactor::OperationState::Completed) == 2);
+  CHECK(engine->count_operations(ringu::RingEngine::OperationState::Completed) == 2);
 
-  reactor->submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
-  reactor->process(ringu::Reactor::ProcessMode::Batch);
+  engine->submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+  engine->process(ringu::RingEngine::ProcessMode::Batch);
   ::unlink(path.c_str());
 }
 
@@ -170,10 +170,10 @@ TEST_CASE("Pool invariant: destroying the pool with an active buffer terminates"
     // child: destroy the pool while a buffer is still borrowed -> must terminate.
     // reset the signal handlers inherited from doctest so the child dies cleanly.
     ::signal(SIGABRT, SIG_DFL);
-    auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 16});
-    REQUIRE(reactor_result.has_value());
-    auto reactor = std::move(reactor_result).value();
-    auto pool_result = ringu::RegisteredMemoryPool::Create(reactor->ring(), 64, 2);
+    auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 16});
+    REQUIRE(ring_engine_result.has_value());
+    auto engine = std::move(ring_engine_result).value();
+    auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 64, 2);
     REQUIRE(pool_result.has_value());
     auto pool = std::move(pool_result).value();
     ringu::RegisteredBuffer buf = borrow_or_fail(*pool);

@@ -74,8 +74,8 @@ private:
 
 /// Memory pool of io_uring registered buffers, bound to a Ring.
 ///
-/// The pool is created with Create(), passing a reference to the io_uring Ring
-/// (see Reactor::ring()), and keeps that reference internally: every chunk it
+/// The pool is created with create(), passing a reference to the io_uring Ring
+/// (see RingEngine::ring()), and keeps that reference internally: every chunk it
 /// hands out is registered with the ring as a fixed buffer
 /// (IORING_REGISTER_BUFFERS), so read/write operations submitted with it take
 /// the zero-copy READ_FIXED/WRITE_FIXED path (no per-operation page pinning).
@@ -96,12 +96,12 @@ private:
 class RegisteredMemoryPool {
 public:
   /// Creates a pool of count fixed buffers of buffer_size bytes, registered on
-  /// ring (e.g. Reactor::ring()). The constructor is private: use Create().
+  /// ring (e.g. RingEngine::ring()). The constructor is private: use create().
   ///
   /// Returns a RinguError (opcode + message) instead of throwing when the
   /// backing mmap(2) or the io_uring fixed-buffer registration fails.
   static tl::expected<std::unique_ptr<RegisteredMemoryPool>, RinguError>
-  Create(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
+  create(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
          std::pmr::memory_resource* resource = std::pmr::get_default_resource());
   ~RegisteredMemoryPool();
 

@@ -1,5 +1,5 @@
 // UDP ping-pong demo: two UDP sockets on 127.0.0.1 exchange datagrams through a
-// single ringu::Reactor. Each datagram goes client -> server -> client; the demo
+// single ringu::RingEngine. Each datagram goes client -> server -> client; the demo
 // reports the round-trip latency distribution.
 //
 // usage: demo_udp_pingpong [iterations=10000] [payload_size=64] [sqpoll=1]
@@ -26,7 +26,7 @@
 
 namespace {
 
-std::int32_t make_udp_socket(ringu::Reactor& reactor, sockaddr_in& bound_addr) {
+std::int32_t make_udp_socket(ringu::RingEngine& engine, sockaddr_in& bound_addr) {
   auto sock = ringu::create_socket(ringu::AddressFamily::Inet, ringu::SocketType::Dgram, ringu::SocketProtocol::Udp);
   if (!sock.has_value()) {
     fmt::print(stderr, "socket: {}\n", std::get<ringu::IoError>(sock.error()).message());
@@ -37,17 +37,17 @@ std::int32_t make_udp_socket(ringu::Reactor& reactor, sockaddr_in& bound_addr) {
     std::perror("socket");
     std::exit(1);
   }
-  // bind through the reactor (inline Bind operation) to an ephemeral loopback port
+  // bind through the RingEngine (inline Bind operation) to an ephemeral loopback port
   bool bound = false;
-  reactor.submit(ringu::bind(ringu::FileDescriptor{fd}, ringu::Ipv4Endpoint::loopback(0)),
-                 [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
-                   if (r.has_value()) {
-                     bound = true;
-                   } else {
-                     fmt::print(stderr, "bind: {}\n", std::get<ringu::IoError>(r.error()).message());
-                   }
-                 });
-  reactor.process(ringu::Reactor::ProcessMode::Batch);
+  engine.submit(ringu::bind(ringu::FileDescriptor{fd}, ringu::Ipv4Endpoint::loopback(0)),
+                [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
+                  if (r.has_value()) {
+                    bound = true;
+                  } else {
+                    fmt::print(stderr, "bind: {}\n", std::get<ringu::IoError>(r.error()).message());
+                  }
+                });
+  engine.process(ringu::RingEngine::ProcessMode::Batch);
   if (!bound) {
     std::exit(1);
   }
@@ -68,17 +68,17 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   const std::uint64_t payload_size = argc > 2 ? static_cast<std::uint64_t>(std::atoi(argv[2])) : 64;
   const bool sqpoll = argc > 3 ? std::atoi(argv[3]) != 0 : true; // SQPOLL on by default
 
-  auto reactor_result = ringu::Reactor::Create(ringu::ReactorOptions{.entries = 256, .sqpoll = sqpoll});
-  if (!reactor_result.has_value()) {
-    fmt::print(stderr, "reactor: {}\n", reactor_result.error().message);
+  auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 256, .sqpoll = sqpoll});
+  if (!ring_engine_result.has_value()) {
+    fmt::print(stderr, "ring engine: {}\n", ring_engine_result.error().message);
     return 1;
   }
-  auto reactor = std::move(reactor_result).value();
+  auto engine = std::move(ring_engine_result).value();
 
   sockaddr_in addr_a{};
   sockaddr_in addr_b{};
-  const std::int32_t a = make_udp_socket(*reactor, addr_a);
-  const std::int32_t b = make_udp_socket(*reactor, addr_b);
+  const std::int32_t a = make_udp_socket(*engine, addr_a);
+  const std::int32_t b = make_udp_socket(*engine, addr_b);
   // connect both sockets so the Send/Recv operations can be used
   if (::connect(a, reinterpret_cast<const sockaddr*>(&addr_b), sizeof(addr_b)) != 0 ||
       ::connect(b, reinterpret_cast<const sockaddr*>(&addr_a), sizeof(addr_a)) != 0) {
@@ -106,72 +106,72 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   std::function<void()> submit_send_b;
 
   submit_recv_b = [&] {
-    recv_b_id = reactor->submit(ringu::recv(ringu::FileDescriptor{b}), std::move(*recv_b_buf),
-                                [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
-                                  if (!r.has_value() || res <= 0) {
-                                    reactor->request_stop();
-                                    return;
-                                  }
-                                  recv_b_buf = std::move(*r);
-                                  recv_b_buf->resize(static_cast<std::size_t>(payload_size));
-                                  submit_send_b();
-                                });
+    recv_b_id = engine->submit(ringu::recv(ringu::FileDescriptor{b}), std::move(*recv_b_buf),
+                               [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                                 if (!r.has_value() || res <= 0) {
+                                   engine->request_stop();
+                                   return;
+                                 }
+                                 recv_b_buf = std::move(*r);
+                                 recv_b_buf->resize(static_cast<std::size_t>(payload_size));
+                                 submit_send_b();
+                               });
   };
 
   submit_send_b = [&] {
-    reactor->submit(ringu::send(ringu::FileDescriptor{b}), std::move(*send_b_buf),
-                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
-                      if (!r.has_value() || res <= 0) {
-                        reactor->request_stop();
-                        return;
-                      }
-                      send_b_buf = std::move(*r);
-                      submit_recv_b(); // arm the next receive on b
-                    });
+    engine->submit(ringu::send(ringu::FileDescriptor{b}), std::move(*send_b_buf),
+                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                     if (!r.has_value() || res <= 0) {
+                       engine->request_stop();
+                       return;
+                     }
+                     send_b_buf = std::move(*r);
+                     submit_recv_b(); // arm the next receive on b
+                   });
   };
 
   submit_send_a = [&] {
     t_send_a = std::chrono::steady_clock::now();
     const std::uint64_t seq = static_cast<std::uint64_t>(round_trips);
     std::memcpy(send_a_buf->data(), &seq, sizeof(seq));
-    reactor->submit(ringu::send(ringu::FileDescriptor{a}), std::move(*send_a_buf),
-                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
-                      if (!r.has_value() || res <= 0) {
-                        reactor->request_stop();
-                        return;
-                      }
-                      send_a_buf = std::move(*r);
-                    });
+    engine->submit(ringu::send(ringu::FileDescriptor{a}), std::move(*send_a_buf),
+                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                     if (!r.has_value() || res <= 0) {
+                       engine->request_stop();
+                       return;
+                     }
+                     send_a_buf = std::move(*r);
+                   });
   };
 
   submit_recv_a = [&] {
-    reactor->submit(ringu::recv(ringu::FileDescriptor{a}), std::move(*recv_a_buf),
-                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
-                      if (!r.has_value() || res <= 0) {
-                        reactor->request_stop();
-                        return;
-                      }
-                      recv_a_buf = std::move(*r);
-                      const auto now = std::chrono::steady_clock::now();
-                      latencies_ns.push_back(
-                          std::chrono::duration_cast<std::chrono::nanoseconds>(now - t_send_a).count());
-                      round_trips += 1;
-                      if (round_trips < iterations) {
-                        recv_a_buf->resize(static_cast<std::size_t>(payload_size));
-                        submit_recv_a(); // arm the next receive on a
-                        submit_send_a();
-                      } else {
-                        reactor->cancel(recv_b_id); // nothing will arrive on b anymore
-                        reactor->request_stop();
-                      }
-                    });
+    engine->submit(ringu::recv(ringu::FileDescriptor{a}), std::move(*recv_a_buf),
+                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                     if (!r.has_value() || res <= 0) {
+                       engine->request_stop();
+                       return;
+                     }
+                     recv_a_buf = std::move(*r);
+                     const auto now = std::chrono::steady_clock::now();
+                     latencies_ns.push_back(
+                         std::chrono::duration_cast<std::chrono::nanoseconds>(now - t_send_a).count());
+                     round_trips += 1;
+                     if (round_trips < iterations) {
+                       recv_a_buf->resize(static_cast<std::size_t>(payload_size));
+                       submit_recv_a(); // arm the next receive on a
+                       submit_send_a();
+                     } else {
+                       engine->cancel(recv_b_id); // nothing will arrive on b anymore
+                       engine->request_stop();
+                     }
+                   });
   };
 
   submit_recv_b();
   submit_recv_a();
   submit_send_a();
   const auto t_start = std::chrono::steady_clock::now();
-  reactor->process(ringu::Reactor::ProcessMode::Forever);
+  engine->process(ringu::RingEngine::ProcessMode::Forever);
   const auto elapsed =
       std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_start).count();
 

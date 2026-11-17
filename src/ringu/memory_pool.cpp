@@ -61,7 +61,7 @@ std::byte* RegisteredBuffer::data() const {
 std::uint64_t RegisteredBuffer::size() const { return pool_ != nullptr ? pool_->buffer_size() : 0; }
 
 tl::expected<std::unique_ptr<RegisteredMemoryPool>, RinguError>
-RegisteredMemoryPool::Create(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
+RegisteredMemoryPool::create(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
                              std::pmr::memory_resource* resource) {
   enforce_precondition(buffer_size > 0 && count > 0);
   auto pool = std::unique_ptr<RegisteredMemoryPool>(new RegisteredMemoryPool(ring, buffer_size, count, resource));

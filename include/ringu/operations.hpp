@@ -78,7 +78,7 @@ inline PwriteOp pwrite(FileDescriptor fd, std::uint64_t offset) { return PwriteO
 
 /// Seeks in fd (lseek(2) semantics). Completes with the new offset.
 ///
-/// No io_uring opcode exists for lseek: the Reactor executes it synchronously
+/// No io_uring opcode exists for lseek: the RingEngine executes it synchronously
 /// when the current batch is processed.
 struct LseekOp {
   FileDescriptor fd;
@@ -112,7 +112,7 @@ inline CloseOp close(FileDescriptor fd) { return CloseOp{fd}; }
 
 /// Marks a socket as passive (listen(2) semantics).
 ///
-/// No io_uring opcode exists for listen: the Reactor executes it synchronously
+/// No io_uring opcode exists for listen: the RingEngine executes it synchronously
 /// when the current batch is processed.
 struct ListenOp {
   FileDescriptor fd;
@@ -128,12 +128,12 @@ inline ListenOp listen(FileDescriptor fd, std::int32_t backlog) { return ListenO
 struct AcceptOp {
   FileDescriptor fd;
   std::int32_t flags = 0;
-  std::uint32_t addr_len = 0; // filled by the Reactor from the buffer size
+  std::uint32_t addr_len = 0; // filled by the RingEngine from the buffer size
 };
 
 /// Constructs an AcceptOp operation. Submit it with an AcceptBuffer to receive the
 /// peer address (a sockaddr_storage), e.g.:
-///   reactor.submit(accept(lfd), AcceptBuffer{}, callback);
+///   engine.submit(accept(lfd), AcceptBuffer{}, callback);
 inline AcceptOp accept(FileDescriptor fd, std::int32_t flags = 0) { return AcceptOp{fd, flags, 0}; }
 
 /// Sends the buffer on a connected socket (send(2) semantics).
@@ -172,7 +172,7 @@ inline FsyncOp fsync(FileDescriptor fd, bool use_datasync = false) { return Fsyn
 
 /// bind(2) on fd to an IPv4 or IPv6 endpoint. Completes with 0 on success.
 ///
-/// No io_uring opcode exists for bind: the Reactor executes it synchronously
+/// No io_uring opcode exists for bind: the RingEngine executes it synchronously
 /// when the current batch is processed.
 ///
 /// The sockaddr_in / sockaddr_in6 is stored inside the operation (static buffer),
@@ -220,7 +220,7 @@ inline TimeoutOp timeout(std::chrono::nanoseconds duration) {
   return op;
 }
 
-/// Variant of every operation supported by the Reactor. Each operation is its own
+/// Variant of every operation supported by the RingEngine. Each operation is its own
 /// struct held by this variant.
 using Operation = std::variant<OpenAtOp, ReadOp, PreadOp, WriteOp, PwriteOp, LseekOp, FstatOp, CloseOp, ListenOp,
                                AcceptOp, SendOp, RecvOp, TimeoutOp, FsyncOp, ConnectOp, BindOp>;
@@ -246,7 +246,7 @@ inline constexpr bool uses_buffer_v =
     std::is_same_v<std::decay_t<Op>, SendOp> || std::is_same_v<std::decay_t<Op>, RecvOp>;
 
 /// True for the operations that have no io_uring opcode and are therefore executed
-/// synchronously by the Reactor when the current batch is processed.
+/// synchronously by the RingEngine when the current batch is processed.
 template <typename Op>
 inline constexpr bool is_inline_v =
     std::is_same_v<std::decay_t<Op>, LseekOp> || std::is_same_v<std::decay_t<Op>, ListenOp> ||

@@ -69,7 +69,7 @@ endfunction()
 
 # ringu static library (private header: ring.hpp holds the io_uring internals)
 ringu_add_library(ringu
-    SOURCES "ringu/ring.cpp" "ringu/reactor.cpp" "ringu/memory_pool.cpp" "ringu/contracts.cpp" "ringu/ops.cpp"
+    SOURCES "ringu/ring.cpp" "ringu/ring_engine.cpp" "ringu/memory_pool.cpp" "ringu/contracts.cpp" "ringu/ops.cpp"
             "ringu/result.cpp" "ringu/socket.cpp"
     HEADERS "ringu/ring.hpp"
 )
@@ -78,14 +78,14 @@ ringu_add_library(ringu
 ringu_add_test(ringu_unit_tests
     SOURCES "tests/entry_point_unit_test.cpp" "tests/test_contracts.cpp" "tests/test_result.cpp"
             "tests/test_fd_timer.cpp" "tests/test_memory_pool.cpp" "tests/test_operations.cpp"
-            "tests/test_reactor.cpp" "tests/test_ops_file.cpp" "tests/test_ops_socket.cpp" "tests/test_socket.cpp"
+            "tests/test_ring_engine.cpp" "tests/test_ops_file.cpp" "tests/test_ops_socket.cpp" "tests/test_socket.cpp"
             "tests/test_timer.cpp"
     LIBS ringu fmt::fmt
 )
 
 # benches (nanobench)
-ringu_add_bench(nanobench_reactor
-    SOURCES "benches/nanobench_reactor.cpp"
+ringu_add_bench(nanobench_ring_engine
+    SOURCES "benches/nanobench_ring_engine.cpp"
     LIBS ringu
 )
 ringu_add_bench(nanobench_memory_pool

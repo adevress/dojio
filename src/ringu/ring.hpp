@@ -35,8 +35,8 @@ public:
   ///
   /// Returns a RinguError (opcode + message) instead of throwing when the
   /// io_uring_setup(2) syscall or the ring mmap fails. The constructor is
-  /// private: use Create().
-  static tl::expected<std::unique_ptr<IoUring>, RinguError> Create(std::uint32_t entries, std::uint32_t setup_flags = 0,
+  /// private: use create().
+  static tl::expected<std::unique_ptr<IoUring>, RinguError> create(std::uint32_t entries, std::uint32_t setup_flags = 0,
                                                                    std::uint32_t sq_thread_idle_ms = 0);
   ~IoUring();
 

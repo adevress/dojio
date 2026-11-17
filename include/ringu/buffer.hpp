@@ -15,7 +15,7 @@ inline constexpr std::uint64_t k_sockaddr_storage_size = 128;
 /// StaticBuffer is an alternative to std::vector / std::array / RegisteredBuffer for
 /// operations whose buffer size is known at compile time (e.g. the peer address of
 /// an Accept operation). It satisfies the BufferLike concept accepted by
-/// Reactor::submit.
+/// RingEngine::submit.
 template <std::uint64_t N> class StaticBuffer {
 public:
   using value_type = std::byte;

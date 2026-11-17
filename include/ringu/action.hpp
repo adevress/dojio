@@ -33,7 +33,7 @@ void statx_to_stat(std::byte* data, std::uint64_t size);
 
 } // namespace detail
 
-/// Concept for the buffers accepted by Reactor::submit: std::vector, std::array or
+/// Concept for the buffers accepted by RingEngine::submit: std::vector, std::array or
 /// RegisteredBuffer (any container of a trivially copyable value type with data()/size()).
 template <typename T>
 concept BufferLike = requires(T& t) {
@@ -76,7 +76,7 @@ template <typename Buffer> struct result_value<TimeoutOp, Buffer> {
 };
 template <typename Op, typename Buffer> using result_value_t = typename result_value<Op, Buffer>::type;
 
-/// Abstract base of every delayed action tracked by the Reactor.
+/// Abstract base of every delayed action tracked by the RingEngine.
 ///
 /// The ring-facing state is a plain Sqe mirror; the library copies it onto the real
 /// kernel SQE, so no io_uring type appears here.
@@ -88,7 +88,7 @@ public:
   [[nodiscard]] OperationId id() const { return id_; }
 
   /// True when the operation has no io_uring opcode and is executed synchronously
-  /// by the Reactor when the current batch is processed.
+  /// by the RingEngine when the current batch is processed.
   [[nodiscard]] virtual bool is_inline() const { return false; }
 
   /// Executes an inline operation, returning the raw result code.
@@ -100,7 +100,7 @@ public:
   /// Dispatches the completion to the callback. res is the raw CQE result.
   virtual void complete(std::int32_t res) = 0;
 
-  /// The SQE mirror of this action, copied onto the kernel ring by the Reactor.
+  /// The SQE mirror of this action, copied onto the kernel ring by the RingEngine.
   [[nodiscard]] Sqe& sqe() { return sqe_; }
 
   /// True once the operation is destined for the io_uring ring (not inline).

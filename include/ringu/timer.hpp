@@ -6,7 +6,7 @@ namespace ringu {
 
 /// Typed handler for a timer request.
 ///
-/// Submitting a Timer to a Reactor arms an io_uring timeout: the associated
+/// Submitting a Timer to a RingEngine arms an io_uring timeout: the associated
 /// action completes successfully once the duration has elapsed.
 class Timer {
 public:

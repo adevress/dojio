@@ -15,7 +15,7 @@ enum class ErrorOpcode : std::uint32_t {
 };
 
 /// Error reported by the fallible operations of the library (e.g.
-/// Reactor::Create, RegisteredMemoryPool::Create, RegisteredMemoryPool::borrow)
+/// RingEngine::create, RegisteredMemoryPool::create, RegisteredMemoryPool::borrow)
 /// through a tl::expected: the opcode of the failing operation and a
 /// human-readable message (including the errno description).
 struct RinguError {

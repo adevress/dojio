@@ -4,9 +4,9 @@
 
 namespace ringu {
 
-/// Strongly typed identifier of an operation submitted to a Reactor.
+/// Strongly typed identifier of an operation submitted to a RingEngine.
 ///
-/// Returned by Reactor::submit and accepted by Reactor::cancel.
+/// Returned by RingEngine::submit and accepted by RingEngine::cancel.
 struct OperationId {
   std::uint64_t value = 0;
 

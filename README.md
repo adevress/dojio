@@ -25,7 +25,7 @@ applications on Linux, by:
 - exposing `io_uring` through modern and safe C++20 features
 - being data-oriented and performance-focused
 - Focus on a "never blocking" API appropriate for high performance server or Fiber based io framework
-- Architecture "Zero sharing" (One reactor per thread, and message passing between thread)
+- Architecture "Zero sharing" (One RingEngine per thread, and message passing between thread)
 
 ## Compilation instructions
 
@@ -52,7 +52,7 @@ The default build type is `RelWithDebInfo`. Build artifacts:
 
 - `libringu.a` — the static library.
 - `ringu_unit_tests` — the doctest unit-test binary.
-- `nanobench_reactor`, `nanobench_memory_pool` — benchmarks.
+- `nanobench_ring_engine`, `nanobench_memory_pool` — benchmarks.
 - `demo_udp_pingpong`, `demo_tcp_hello` — demo programs.
 
 ### CMake options
@@ -77,7 +77,7 @@ ctest -V
 
 ```sh
 cd build-agent
-./nanobench_reactor
+./nanobench_ring_engine
 ./nanobench_memory_pool
 
 # UDP ping-pong: reports latency. usage: demo_udp_pingpong [iterations=10000] [payload_size=64] [sqpoll=1]

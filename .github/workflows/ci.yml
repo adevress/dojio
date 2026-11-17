@@ -69,6 +69,6 @@ jobs:
                 -DCMAKE_CXX_COMPILER="${{ matrix.compiler.cxx }}"
               cmake --build "$build_dir"
               ctest --test-dir "$build_dir" --output-on-failure
-              "$build_dir/src/nanobench_reactor"
+              "$build_dir/src/nanobench_ring_engine"
               "$build_dir/src/nanobench_memory_pool"
             '

@@ -28,8 +28,8 @@ class IoUring;
 
 namespace ringu {
 
-/// Options controlling how a Reactor's underlying io_uring instance is set up.
-struct ReactorOptions {
+/// Options controlling how a RingEngine's underlying io_uring instance is set up.
+struct RingEngineOptions {
   /// Number of entries of the submission / completion rings.
   std::uint32_t entries = 256;
   /// Create the ring with IORING_SETUP_SQPOLL: a kernel thread polls the
@@ -44,20 +44,20 @@ struct ReactorOptions {
   std::chrono::milliseconds sqpoll_poll_time{2000};
 };
 
-/// The Reactor submits I/O operations, their associated buffer and their completion
+/// The RingEngine submits I/O operations, their associated buffer and their completion
 /// handler to a Linux io_uring instance, and dispatches the completions.
 ///
-/// NOT THREAD SAFE: a Reactor, and every object it hands out (operation ids, buffers
+/// NOT THREAD SAFE: a RingEngine, and every object it hands out (operation ids, buffers
 /// borrowed from a pool created on it), must be used from a single thread. For
-/// multi-threaded share-nothing designs, create one Reactor per thread (see the
+/// multi-threaded share-nothing designs, create one RingEngine per thread (see the
 /// demo_tcp_hello demo).
 ///
-/// Usage: auto reactor = Reactor::Create(ReactorOptions{...}); check the returned
+/// Usage: auto engine = RingEngine::create(RingEngineOptions{...}); check the returned
 /// tl::expected, then submit() queues
 /// an operation (all parameters are passed by value, buffers are moved) and returns
 /// a typed OperationId; process() pushes the queued operations to the kernel and
 /// dispatches their completions.
-class Reactor {
+class RingEngine {
 public:
   /// Selects how process() behaves.
   enum class ProcessMode {
@@ -72,17 +72,17 @@ public:
     Failed     ///< failed (an I/O error code, or a cancellation)
   };
 
-  /// Creates a Reactor with the given options (SQPOLL enabled, 2000 ms poll
-  /// time by default). The constructor is private: use Create().
+  /// Creates a RingEngine with the given options (SQPOLL enabled, 2000 ms poll
+  /// time by default). The constructor is private: use create().
   ///
   /// Returns a RinguError (opcode + message) when the underlying io_uring ring
   /// cannot be created (io_uring_setup(2) or ring mmap failure) instead of
   /// throwing.
-  static tl::expected<std::unique_ptr<Reactor>, RinguError> Create(ReactorOptions options = ReactorOptions{});
-  ~Reactor();
+  static tl::expected<std::unique_ptr<RingEngine>, RinguError> create(RingEngineOptions options = RingEngineOptions{});
+  ~RingEngine();
 
-  Reactor(const Reactor&) = delete;
-  Reactor& operator=(const Reactor&) = delete;
+  RingEngine(const RingEngine&) = delete;
+  RingEngine& operator=(const RingEngine&) = delete;
 
   /// Submits op with its associated buffer and completion callback.
   ///
@@ -139,11 +139,11 @@ public:
   [[nodiscard]] std::chrono::milliseconds sqpoll_poll_time() const;
 
   /// The underlying io_uring ring (e.g. to create a RegisteredMemoryPool on this
-  /// reactor).
+  /// engine).
   [[nodiscard]] detail::IoUring& ring() { return *ring_; }
 
 private:
-  explicit Reactor(std::unique_ptr<detail::IoUring> ring);
+  explicit RingEngine(std::unique_ptr<detail::IoUring> ring);
 
   template <typename Op, typename Buffer, typename Callback>
   OperationId do_submit(Op op, Buffer buffer, Callback callback, bool timer) {
@@ -152,7 +152,7 @@ private:
     auto action = std::make_unique<Action<Op, Buffer, Callback>>(id, std::move(op), std::move(buffer),
                                                                  std::move(callback), timer);
     if (!action->is_inline()) {
-      // fill the SQE mirror now; the Reactor copies it onto the kernel ring at flush
+      // fill the SQE mirror now; the RingEngine copies it onto the kernel ring at flush
       action->fill();
       action->sqe().user_data = id.value;
       action->set_in_ring();
