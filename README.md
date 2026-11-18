@@ -53,7 +53,7 @@ The default build type is `RelWithDebInfo`. Build artifacts:
 - `libringu.a` — the static library.
 - `ringu_unit_tests` — the doctest unit-test binary.
 - `nanobench_ring_engine`, `nanobench_memory_pool` — benchmarks.
-- `demo_udp_pingpong`, `demo_tcp_hello` — demo programs.
+- `demo_udp_pingpong`, `demo_tcp_hello`, `demo_file_rw` — demo programs.
 
 ### CMake options
 
@@ -86,6 +86,10 @@ cd build-agent
 # TCP hello world: reports throughput.
 # usage: demo_tcp_hello [threads=4] [messages_per_connection=20000] [base_port=24100] [sqpoll=1]
 ./demo_tcp_hello
+
+# File write: blocking POSIX vs concurrent RingEngine, reports wall-clock time.
+# usage: demo_file_rw [base_directory=/tmp]
+./demo_file_rw
 ```
 
 ### Install

@@ -102,3 +102,7 @@ ringu_add_demo(demo_tcp_hello
     SOURCES "demos/tcp_hello.cpp"
     LIBS ringu fmt::fmt
 )
+ringu_add_demo(demo_file_rw
+    SOURCES "demos/demo_file_rw.cpp"
+    LIBS ringu fmt::fmt
+)
