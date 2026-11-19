@@ -62,7 +62,7 @@ void statx_to_stat(std::byte* data, std::uint64_t size) {
   }
   const auto* stx = reinterpret_cast<const struct statx*>(data);
   auto* st = reinterpret_cast<struct stat*>(data);
-  struct stat tmp{};
+  struct stat tmp {};
   tmp.st_dev = makedev(stx->stx_dev_major, stx->stx_dev_minor);
   tmp.st_ino = static_cast<decltype(tmp.st_ino)>(stx->stx_ino);
   tmp.st_mode = static_cast<decltype(tmp.st_mode)>(stx->stx_mode);
