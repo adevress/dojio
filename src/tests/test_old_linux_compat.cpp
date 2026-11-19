@@ -1,7 +1,7 @@
-// Built as its own target with -DRINGU_FORCE_LINUX_OLD_KERNEL, which makes
-// detail::simulated_old_kernel() report an old kernel so the dispatcher sends the
-// syscall-backed operations (bind/listen, ftruncate, pipe) down the inline path even
-// when the running kernel exposes IORING_OP_BIND/LISTEN/FTRUNCATE/PIPE.
+// Built as its own target with -DRINGU_FORCE_LINUX_OLD_KERNEL, which makes the
+// dispatcher send the syscall-backed operations (bind/listen, ftruncate, pipe) down
+// the inline path even when the running kernel exposes
+// IORING_OP_BIND/LISTEN/FTRUNCATE/PIPE.
 //
 // The opposite path (io_uring opcodes) is covered by the regular test targets, which
 // are built without the flag.
@@ -30,7 +30,9 @@
 namespace {
 
 /// The whole point of this target: fail to build if the flag is not enforced.
-static_assert(ringu::detail::simulated_old_kernel(), "this target requires -DRINGU_FORCE_LINUX_OLD_KERNEL");
+#if !defined(RINGU_FORCE_LINUX_OLD_KERNEL)
+#error "this target requires -DRINGU_FORCE_LINUX_OLD_KERNEL"
+#endif
 
 std::string make_tmp_path(const std::string& tag) {
   static std::int32_t counter = 0;

@@ -99,9 +99,8 @@ ringu_add_test(ringu_unit_tests
 # the syscall-backed ops (bind/listen, ftruncate, pipe) are dispatched to io_uring when
 # the running kernel exposes their opcode and executed inline otherwise. On a recent
 # kernel the inline path would never run, so this target builds its test translation
-# unit with RINGU_FORCE_LINUX_OLD_KERNEL: detail::simulated_old_kernel() (action.hpp)
-# then fakes an old kernel and forces the inline path. io_uring is Linux-only, so the
-# target is only meaningful there.
+# unit with RINGU_FORCE_LINUX_OLD_KERNEL, which fakes an old kernel and forces the
+# inline path. io_uring is Linux-only, so the target is only meaningful there.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     ringu_add_test(ringu_old_linux_compat_tests
         SOURCES "tests/entry_point_unit_test.cpp" "tests/test_old_linux_compat.cpp"

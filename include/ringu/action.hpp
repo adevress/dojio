@@ -53,20 +53,6 @@ bool kernel_supports_ftruncate();
 /// True when the running kernel exposes IORING_OP_PIPE (Linux 6.16+).
 bool kernel_supports_pipe();
 
-/// True when the dispatcher must assume a kernel too old to expose the syscall-backed
-/// io_uring opcodes (IORING_OP_BIND/LISTEN, IORING_OP_FTRUNCATE, IORING_OP_PIPE), so
-/// that the affected operations take their inline (syscall) path. Defining
-/// RINGU_FORCE_LINUX_OLD_KERNEL at build time makes this always true, which is how
-/// the inline path is covered on a recent kernel (see the
-/// ringu_old_linux_compat_tests target).
-[[nodiscard]] constexpr bool simulated_old_kernel() {
-#if defined(RINGU_FORCE_LINUX_OLD_KERNEL)
-  return true;
-#else
-  return false;
-#endif
-}
-
 } // namespace detail
 
 /// Concept for the buffers accepted by RingEngine::submit: std::vector, std::array or
@@ -326,17 +312,25 @@ private:
 
   /// Dispatcher run at submission time: a syscall-backed operation goes to the
   /// io_uring submission queue when the running kernel exposes its opcode, and is
-  /// executed synchronously (inline) when it does not. detail::simulated_old_kernel()
-  /// forces the inline path as well when RINGU_FORCE_LINUX_OLD_KERNEL is defined.
+  /// executed synchronously (inline) when it does not.
   static bool compute_inline() {
+    // RINGU_FORCE_LINUX_OLD_KERNEL forces the inline path so it is covered on a recent
+    // kernel (see the ringu_old_linux_compat_tests target).
+    [[maybe_unused]] constexpr auto simulated_old_kernel = [] {
+#if defined(RINGU_FORCE_LINUX_OLD_KERNEL)
+      return true;
+#else
+      return false;
+#endif
+    };
     if constexpr (InlineOperation<Op>) {
       return true;
     } else if constexpr (std::is_same_v<Op, ListenOp> || std::is_same_v<Op, BindOp>) {
-      return detail::simulated_old_kernel() || !detail::kernel_supports_bind_listen();
+      return simulated_old_kernel() || !detail::kernel_supports_bind_listen();
     } else if constexpr (std::is_same_v<Op, FtruncateOp>) {
-      return detail::simulated_old_kernel() || !detail::kernel_supports_ftruncate();
+      return simulated_old_kernel() || !detail::kernel_supports_ftruncate();
     } else if constexpr (std::is_same_v<Op, PipeOp>) {
-      return detail::simulated_old_kernel() || !detail::kernel_supports_pipe();
+      return simulated_old_kernel() || !detail::kernel_supports_pipe();
     } else {
       return false;
     }
