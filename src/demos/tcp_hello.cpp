@@ -1,8 +1,8 @@
 // Single-threaded TCP hello-world server with N multi-threaded clients.
 //
-// One server thread owns a ringu::RingEngine and a single listening socket on
+// One server thread owns a dojio::RingEngine and a single listening socket on
 // 127.0.0.1:<base_port>; it accepts all N client connections on that socket.
-// N client threads each own a ringu::RingEngine and one connection to the server.
+// N client threads each own a dojio::RingEngine and one connection to the server.
 // Each round trip: the client sends "hello", the server replies "world". The
 // demo reports the aggregate throughput.
 //
@@ -23,7 +23,7 @@
 #include <thread>
 #include <vector>
 
-#include <ringu/ringu.hpp>
+#include <dojio/dojio.hpp>
 
 namespace {
 
@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
   const std::int32_t messages = argc > 2 ? static_cast<std::int32_t>(std::atoi(argv[2])) : 20000;
   const std::uint16_t base_port = argc > 3 ? static_cast<std::uint16_t>(std::atoi(argv[3])) : 24100;
   const bool sqpoll = false;
-  const ringu::RingEngineOptions engine_opts{.entries = 1024, .sqpoll = sqpoll};
+  const dojio::RingEngineOptions engine_opts{.entries = 1024, .sqpoll = sqpoll};
 
   std::atomic<std::int32_t> ready{0};
   std::vector<std::thread> clients;
@@ -47,16 +47,16 @@ int main(int argc, char** argv) {
 
   // single server thread: one RingEngine + one listening socket, accepts all N clients
   std::thread server([&] {
-    auto ring_engine_result = ringu::RingEngine::create(engine_opts);
+    auto ring_engine_result = dojio::RingEngine::create(engine_opts);
     if (!ring_engine_result.has_value()) {
       fmt::print(stderr, "server: ring engine: {}\n", ring_engine_result.error().message);
       std::exit(1);
     }
     auto engine = std::move(ring_engine_result).value();
-    auto sock = ringu::create_socket(ringu::AddressFamily::Inet, ringu::SocketType::Stream, ringu::SocketProtocol::Tcp,
-                                     ringu::SocketFlag::CloExec);
+    auto sock = dojio::create_socket(dojio::AddressFamily::Inet, dojio::SocketType::Stream, dojio::SocketProtocol::Tcp,
+                                     dojio::SocketFlag::CloExec);
     if (!sock.has_value()) {
-      fmt::print(stderr, "server: socket: {}\n", std::get<ringu::IoError>(sock.error()).message());
+      fmt::print(stderr, "server: socket: {}\n", std::get<dojio::IoError>(sock.error()).message());
       std::exit(1);
     }
     const std::int32_t lfd = sock->value();
@@ -64,27 +64,27 @@ int main(int argc, char** argv) {
     ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     // bind through the RingEngine (IORING_OP_BIND on a recent kernel, inline bind(2) otherwise)
     bool bound = false;
-    engine->submit(ringu::bind(ringu::FileDescriptor{lfd}, ringu::Ipv4Endpoint::loopback(base_port)),
-                   [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
+    engine->submit(dojio::bind(dojio::FileDescriptor{lfd}, dojio::Ipv4Endpoint::loopback(base_port)),
+                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
                      if (r.has_value()) {
                        bound = true;
                      } else {
-                       fmt::print(stderr, "server: bind: {}\n", std::get<ringu::IoError>(r.error()).message());
+                       fmt::print(stderr, "server: bind: {}\n", std::get<dojio::IoError>(r.error()).message());
                      }
                    });
-    engine->process(ringu::RingEngine::ProcessMode::Batch);
+    engine->process(dojio::RingEngine::ProcessMode::Batch);
     if (!bound) {
       fmt::print(stderr, "server: bind failed\n");
       std::exit(1);
     }
     // listen through the RingEngine (IORING_OP_LISTEN on a recent kernel, inline listen(2) otherwise)
     bool listened = false;
-    engine->submit(ringu::listen(ringu::FileDescriptor{lfd}, 128),
-                   [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
+    engine->submit(dojio::listen(dojio::FileDescriptor{lfd}, 128),
+                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
                      if (r.has_value())
                        listened = true;
                    });
-    engine->process(ringu::RingEngine::ProcessMode::Batch);
+    engine->process(dojio::RingEngine::ProcessMode::Batch);
     if (!listened) {
       fmt::print(stderr, "server: listen failed\n");
       std::exit(1);
@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
     // accept/connection state shared by the callbacks below; every callback runs
     // on this single server thread, so no synchronization is needed
     struct State {
-      ringu::RingEngine& engine;
+      dojio::RingEngine& engine;
       std::int32_t lfd;
       std::int32_t num_clients;
       std::int32_t accepted = 0;
@@ -115,8 +115,8 @@ int main(int argc, char** argv) {
     std::function<void()> do_accept;
     do_accept = [state, &do_accept] {
       state->engine.submit(
-          ringu::accept(ringu::FileDescriptor{state->lfd}), std::vector<std::byte>(sizeof(sockaddr_storage)),
-          [state, &do_accept](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+          dojio::accept(dojio::FileDescriptor{state->lfd}), std::vector<std::byte>(sizeof(sockaddr_storage)),
+          [state, &do_accept](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
             if (!r.has_value()) {
               if (state->accepted < state->num_clients) {
                 do_accept(); // transient accept error: keep waiting for clients
@@ -132,8 +132,8 @@ int main(int argc, char** argv) {
                                                     {}});
             conn->do_recv = [conn] {
               conn->state->engine.submit(
-                  ringu::recv(ringu::FileDescriptor{conn->cfd}), std::move(*conn->rbuf),
-                  [conn](ringu::Result<std::vector<std::byte>> rr, ringu::OperationId, std::int32_t res) {
+                  dojio::recv(dojio::FileDescriptor{conn->cfd}), std::move(*conn->rbuf),
+                  [conn](dojio::Result<std::vector<std::byte>> rr, dojio::OperationId, std::int32_t res) {
                     if (!rr.has_value() || res <= 0) {
                       // client went away: stop once every client is done
                       conn->state->active -= 1;
@@ -145,8 +145,8 @@ int main(int argc, char** argv) {
                     *conn->rbuf = std::move(*rr);
                     conn->rbuf->resize(16);
                     conn->state->engine.submit(
-                        ringu::send(ringu::FileDescriptor{conn->cfd}), std::move(*conn->sbuf),
-                        [conn](ringu::Result<std::vector<std::byte>> sr, ringu::OperationId, std::int32_t) {
+                        dojio::send(dojio::FileDescriptor{conn->cfd}), std::move(*conn->sbuf),
+                        [conn](dojio::Result<std::vector<std::byte>> sr, dojio::OperationId, std::int32_t) {
                           if (!sr.has_value()) {
                             conn->state->active -= 1;
                             if (conn->state->accepted == conn->state->num_clients && conn->state->active == 0) {
@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
           });
     };
     do_accept();
-    engine->process(ringu::RingEngine::ProcessMode::Forever);
+    engine->process(dojio::RingEngine::ProcessMode::Forever);
     ::close(lfd);
   });
 
@@ -176,29 +176,29 @@ int main(int argc, char** argv) {
       while (ready.load() < 1) {
         std::this_thread::yield();
       }
-      auto ring_engine_result = ringu::RingEngine::create(engine_opts);
+      auto ring_engine_result = dojio::RingEngine::create(engine_opts);
       if (!ring_engine_result.has_value()) {
         fmt::print(stderr, "client {}: ring engine: {}\n", i, ring_engine_result.error().message);
         std::exit(1);
       }
       auto engine = std::move(ring_engine_result).value();
       auto sock =
-          ringu::create_socket(ringu::AddressFamily::Inet, ringu::SocketType::Stream, ringu::SocketProtocol::Tcp);
+          dojio::create_socket(dojio::AddressFamily::Inet, dojio::SocketType::Stream, dojio::SocketProtocol::Tcp);
       if (!sock.has_value()) {
-        fmt::print(stderr, "client {}: socket: {}\n", i, std::get<ringu::IoError>(sock.error()).message());
+        fmt::print(stderr, "client {}: socket: {}\n", i, std::get<dojio::IoError>(sock.error()).message());
         std::exit(1);
       }
       const std::int32_t fd = sock->value();
       // connect through the engine with the Connect operation
-      const auto endpoint = ringu::Ipv4Endpoint::loopback(base_port);
+      const auto endpoint = dojio::Ipv4Endpoint::loopback(base_port);
       bool connected = false;
       for (std::int32_t tries = 0; tries < 10000 && !connected; ++tries) {
-        engine->submit(ringu::connect(ringu::FileDescriptor{fd}, endpoint),
-                       [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
+        engine->submit(dojio::connect(dojio::FileDescriptor{fd}, endpoint),
+                       [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
                          if (r.has_value())
                            connected = true;
                        });
-        engine->process(ringu::RingEngine::ProcessMode::Batch);
+        engine->process(dojio::RingEngine::ProcessMode::Batch);
         if (!connected) {
           std::this_thread::yield();
         }
@@ -214,8 +214,8 @@ int main(int argc, char** argv) {
       std::function<void()> do_send;
       std::function<void()> do_recv;
       do_recv = [&] {
-        engine->submit(ringu::recv(ringu::FileDescriptor{fd}), std::move(*rbuf),
-                       [&](ringu::Result<std::vector<std::byte>> rr, ringu::OperationId, std::int32_t res) {
+        engine->submit(dojio::recv(dojio::FileDescriptor{fd}), std::move(*rbuf),
+                       [&](dojio::Result<std::vector<std::byte>> rr, dojio::OperationId, std::int32_t res) {
                          if (!rr.has_value() || res <= 0) {
                            engine->request_stop();
                            return;
@@ -231,8 +231,8 @@ int main(int argc, char** argv) {
                        });
       };
       do_send = [&] {
-        engine->submit(ringu::send(ringu::FileDescriptor{fd}), std::move(*sbuf),
-                       [&](ringu::Result<std::vector<std::byte>> sr, ringu::OperationId, std::int32_t res) {
+        engine->submit(dojio::send(dojio::FileDescriptor{fd}), std::move(*sbuf),
+                       [&](dojio::Result<std::vector<std::byte>> sr, dojio::OperationId, std::int32_t res) {
                          if (!sr.has_value() || res <= 0) {
                            engine->request_stop();
                            return;
@@ -242,7 +242,7 @@ int main(int argc, char** argv) {
                        });
       };
       do_send();
-      engine->process(ringu::RingEngine::ProcessMode::Forever);
+      engine->process(dojio::RingEngine::ProcessMode::Forever);
       const auto elapsed =
           std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
       client_msgs[static_cast<std::size_t>(i)] = count;
@@ -272,7 +272,7 @@ int main(int argc, char** argv) {
   }
   const double rt_per_s = wall > 0.0 ? static_cast<double>(total_msgs) / wall : 0.0;
   const double bytes_per_rt = 10.0; // "hello" + "world"
-  fmt::print("ringu TCP hello-world: 1 server thread + {} client threads x {} messages (sqpoll {})\n", num_clients,
+  fmt::print("dojio TCP hello-world: 1 server thread + {} client threads x {} messages (sqpoll {})\n", num_clients,
              messages, sqpoll ? "on" : "off");
   fmt::print("  total round trips: {} in {:.3f} s\n", total_msgs, wall);
   fmt::print("  throughput: {:.0f} round trips/s ({:.2f} MiB/s payload)\n", rt_per_s,

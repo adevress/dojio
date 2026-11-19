@@ -1,5 +1,5 @@
 // UDP ping-pong demo: two UDP sockets on 127.0.0.1 exchange datagrams through a
-// single ringu::RingEngine. Each datagram goes client -> server -> client; the demo
+// single dojio::RingEngine. Each datagram goes client -> server -> client; the demo
 // reports the round-trip latency distribution.
 //
 // usage: demo_udp_pingpong [iterations=10000] [payload_size=64]
@@ -22,14 +22,14 @@
 #include <string>
 #include <vector>
 
-#include <ringu/ringu.hpp>
+#include <dojio/dojio.hpp>
 
 namespace {
 
-std::int32_t make_udp_socket(ringu::RingEngine& engine, sockaddr_in& bound_addr) {
-  auto sock = ringu::create_socket(ringu::AddressFamily::Inet, ringu::SocketType::Dgram, ringu::SocketProtocol::Udp);
+std::int32_t make_udp_socket(dojio::RingEngine& engine, sockaddr_in& bound_addr) {
+  auto sock = dojio::create_socket(dojio::AddressFamily::Inet, dojio::SocketType::Dgram, dojio::SocketProtocol::Udp);
   if (!sock.has_value()) {
-    fmt::print(stderr, "socket: {}\n", std::get<ringu::IoError>(sock.error()).message());
+    fmt::print(stderr, "socket: {}\n", std::get<dojio::IoError>(sock.error()).message());
     std::exit(1);
   }
   const std::int32_t fd = sock->value();
@@ -40,15 +40,15 @@ std::int32_t make_udp_socket(ringu::RingEngine& engine, sockaddr_in& bound_addr)
   // bind through the RingEngine (IORING_OP_BIND on a recent kernel, inline bind(2) otherwise) to an
   // ephemeral loopback port
   bool bound = false;
-  engine.submit(ringu::bind(ringu::FileDescriptor{fd}, ringu::Ipv4Endpoint::loopback(0)),
-                [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
+  engine.submit(dojio::bind(dojio::FileDescriptor{fd}, dojio::Ipv4Endpoint::loopback(0)),
+                [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
                   if (r.has_value()) {
                     bound = true;
                   } else {
-                    fmt::print(stderr, "bind: {}\n", std::get<ringu::IoError>(r.error()).message());
+                    fmt::print(stderr, "bind: {}\n", std::get<dojio::IoError>(r.error()).message());
                   }
                 });
-  engine.process(ringu::RingEngine::ProcessMode::Batch);
+  engine.process(dojio::RingEngine::ProcessMode::Batch);
   if (!bound) {
     std::exit(1);
   }
@@ -69,7 +69,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   const std::uint64_t payload_size = argc > 2 ? static_cast<std::uint64_t>(std::atoi(argv[2])) : 64;
   const bool sqpoll = false;
 
-  auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 256, .sqpoll = sqpoll});
+  auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 256, .sqpoll = sqpoll});
   if (!ring_engine_result.has_value()) {
     fmt::print(stderr, "ring engine: {}\n", ring_engine_result.error().message);
     return 1;
@@ -98,7 +98,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   std::vector<std::int64_t> latencies_ns;
   latencies_ns.reserve(static_cast<std::size_t>(iterations));
   std::int32_t round_trips = 0;
-  ringu::OperationId recv_b_id{};
+  dojio::OperationId recv_b_id{};
   std::chrono::steady_clock::time_point t_send_a;
 
   std::function<void()> submit_recv_a;
@@ -107,8 +107,8 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   std::function<void()> submit_send_b;
 
   submit_recv_b = [&] {
-    recv_b_id = engine->submit(ringu::recv(ringu::FileDescriptor{b}), std::move(*recv_b_buf),
-                               [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    recv_b_id = engine->submit(dojio::recv(dojio::FileDescriptor{b}), std::move(*recv_b_buf),
+                               [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                                  if (!r.has_value() || res <= 0) {
                                    engine->request_stop();
                                    return;
@@ -120,8 +120,8 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   };
 
   submit_send_b = [&] {
-    engine->submit(ringu::send(ringu::FileDescriptor{b}), std::move(*send_b_buf),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::send(dojio::FileDescriptor{b}), std::move(*send_b_buf),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      if (!r.has_value() || res <= 0) {
                        engine->request_stop();
                        return;
@@ -135,8 +135,8 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
     t_send_a = std::chrono::steady_clock::now();
     const std::uint64_t seq = static_cast<std::uint64_t>(round_trips);
     std::memcpy(send_a_buf->data(), &seq, sizeof(seq));
-    engine->submit(ringu::send(ringu::FileDescriptor{a}), std::move(*send_a_buf),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::send(dojio::FileDescriptor{a}), std::move(*send_a_buf),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      if (!r.has_value() || res <= 0) {
                        engine->request_stop();
                        return;
@@ -146,8 +146,8 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   };
 
   submit_recv_a = [&] {
-    engine->submit(ringu::recv(ringu::FileDescriptor{a}), std::move(*recv_a_buf),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::recv(dojio::FileDescriptor{a}), std::move(*recv_a_buf),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      if (!r.has_value() || res <= 0) {
                        engine->request_stop();
                        return;
@@ -172,7 +172,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   submit_recv_a();
   submit_send_a();
   const auto t_start = std::chrono::steady_clock::now();
-  engine->process(ringu::RingEngine::ProcessMode::Forever);
+  engine->process(dojio::RingEngine::ProcessMode::Forever);
   const auto elapsed =
       std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_start).count();
 
@@ -192,7 +192,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   const double avg = static_cast<double>(std::accumulate(latencies_ns.begin(), latencies_ns.end(), std::int64_t{0})) /
                      static_cast<double>(lat_count);
 
-  fmt::print("ringu UDP ping-pong: {} round trips, payload {} bytes (sqpoll {})\n", round_trips, payload_size,
+  fmt::print("dojio UDP ping-pong: {} round trips, payload {} bytes (sqpoll {})\n", round_trips, payload_size,
              sqpoll ? "on" : "off");
   fmt::print("  round-trip latency (us): min {:.3f}  avg {:.3f}  p50 {:.3f}  p99 {:.3f}  max {:.3f}\n",
              static_cast<double>(min) / 1e3, avg / 1e3, static_cast<double>(p50) / 1e3, static_cast<double>(p99) / 1e3,

@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
-#include <ringu/box_ptr.hpp>
+#include <dojio/box_ptr.hpp>
 
 namespace {
 
@@ -56,7 +56,7 @@ struct Widget {
 } // namespace
 
 TEST_CASE("BoxPtr default initializes to an empty box") {
-  ringu::BoxPtr<Widget> box;
+  dojio::BoxPtr<Widget> box;
   CHECK_FALSE(static_cast<bool>(box));
   CHECK(box.get() == nullptr);
 }
@@ -67,7 +67,7 @@ TEST_CASE("BoxPtr::make allocates and forwards the arguments to the constructor"
 
   CHECK(Widget::alive == 0);
   {
-    auto box = ringu::BoxPtr<Widget>::make(allocator, 20, 22);
+    auto box = dojio::BoxPtr<Widget>::make(allocator, 20, 22);
 
     CHECK(static_cast<bool>(box));
     CHECK(box.get() != nullptr);
@@ -88,17 +88,17 @@ TEST_CASE("BoxPtr stores and exposes the allocator it was built with") {
   CountingResource resource;
   std::pmr::polymorphic_allocator<Widget> allocator{&resource};
 
-  auto box = ringu::BoxPtr<Widget>::make(allocator, 7);
+  auto box = dojio::BoxPtr<Widget>::make(allocator, 7);
   CHECK(box.get_allocator().resource() == &resource);
 }
 
 TEST_CASE("BoxPtr move construction transfers ownership") {
   std::pmr::polymorphic_allocator<Widget> allocator{std::pmr::new_delete_resource()};
 
-  auto source = ringu::BoxPtr<Widget>::make(allocator, 5);
+  auto source = dojio::BoxPtr<Widget>::make(allocator, 5);
   Widget* raw = source.get();
 
-  ringu::BoxPtr<Widget> destination{std::move(source)};
+  dojio::BoxPtr<Widget> destination{std::move(source)};
   CHECK_FALSE(static_cast<bool>(source));
   CHECK(destination.get() == raw);
   CHECK(destination->sum == 5);
@@ -108,9 +108,9 @@ TEST_CASE("BoxPtr move construction transfers ownership") {
 TEST_CASE("BoxPtr move assignment destroys the previous object") {
   std::pmr::polymorphic_allocator<Widget> allocator{std::pmr::new_delete_resource()};
 
-  auto first = ringu::BoxPtr<Widget>::make(allocator, 1);
+  auto first = dojio::BoxPtr<Widget>::make(allocator, 1);
   Widget* first_raw = first.get();
-  auto second = ringu::BoxPtr<Widget>::make(allocator, 2);
+  auto second = dojio::BoxPtr<Widget>::make(allocator, 2);
   Widget* second_raw = second.get();
 
   CHECK(Widget::alive == 2);
@@ -126,7 +126,7 @@ TEST_CASE("BoxPtr reset destroys and deallocates the object") {
   CountingResource resource;
   std::pmr::polymorphic_allocator<Widget> allocator{&resource};
 
-  auto box = ringu::BoxPtr<Widget>::make(allocator, 3);
+  auto box = dojio::BoxPtr<Widget>::make(allocator, 3);
   CHECK(Widget::alive == 1);
 
   box.reset();
@@ -152,7 +152,7 @@ TEST_CASE("BoxPtr::make returns the storage when the constructor throws") {
   CountingResource resource;
   std::pmr::polymorphic_allocator<Throwing> allocator{&resource};
 
-  CHECK_THROWS_AS(ringu::BoxPtr<Throwing>::make(allocator, true), std::runtime_error);
+  CHECK_THROWS_AS(dojio::BoxPtr<Throwing>::make(allocator, true), std::runtime_error);
   CHECK(resource.allocations == 1);
   CHECK(resource.deallocations == 1);
 }
@@ -164,7 +164,7 @@ struct Empty {};
 
 TEST_CASE("BoxPtr::make works without constructor arguments") {
   std::pmr::polymorphic_allocator<Empty> allocator{std::pmr::new_delete_resource()};
-  auto box = ringu::BoxPtr<Empty>::make(allocator);
+  auto box = dojio::BoxPtr<Empty>::make(allocator);
   CHECK(static_cast<bool>(box));
   CHECK(box.get() != nullptr);
 }
@@ -188,10 +188,10 @@ TEST_CASE("BoxPtr converting move construction deallocates the concrete object s
 
   CHECK(sizeof(Derived) > sizeof(Base));
   {
-    auto derived = ringu::BoxPtr<Derived>::make(allocator, 42);
+    auto derived = dojio::BoxPtr<Derived>::make(allocator, 42);
     Derived* raw = derived.get();
 
-    ringu::BoxPtr<Base> base{std::move(derived)};
+    dojio::BoxPtr<Base> base{std::move(derived)};
     CHECK_FALSE(static_cast<bool>(derived));
     CHECK(base.get() == static_cast<Base*>(raw));
     CHECK(base->value == 42);
@@ -207,8 +207,8 @@ TEST_CASE("BoxPtr converting move assignment deallocates the previous and concre
   std::pmr::polymorphic_allocator<Derived> derived_allocator{&resource};
   std::pmr::polymorphic_allocator<Base> base_allocator{&resource};
 
-  auto base = ringu::BoxPtr<Base>::make(base_allocator, 1);
-  auto derived = ringu::BoxPtr<Derived>::make(derived_allocator, 2);
+  auto base = dojio::BoxPtr<Base>::make(base_allocator, 1);
+  auto derived = dojio::BoxPtr<Derived>::make(derived_allocator, 2);
   Derived* raw = derived.get();
 
   base = std::move(derived);

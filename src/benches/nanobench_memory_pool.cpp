@@ -5,21 +5,21 @@
 #include <stdexcept>
 #include <vector>
 
-#include <ringu/memory_pool.hpp>
-#include <ringu/ring_engine.hpp>
+#include <dojio/memory_pool.hpp>
+#include <dojio/ring_engine.hpp>
 
 int main() {
-  auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 1024});
+  auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 1024});
   if (!ring_engine_result.has_value()) {
     throw std::runtime_error(ring_engine_result.error().message);
   }
   auto engine = std::move(ring_engine_result).value();
 
   ankerl::nanobench::Bench bench;
-  bench.title("ringu memory pool").warmup(2);
+  bench.title("dojio memory pool").warmup(2);
 
   bench.run("pool construction (256 x 4KB registered buffers)", [&] {
-    auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 4096, 256);
+    auto pool_result = dojio::RegisteredMemoryPool::create(engine->ring(), 4096, 256);
     if (!pool_result.has_value()) {
       throw std::runtime_error(pool_result.error().message);
     }
@@ -28,12 +28,12 @@ int main() {
   });
 
   bench.run("borrow 256 buffers", [&] {
-    auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 4096, 256);
+    auto pool_result = dojio::RegisteredMemoryPool::create(engine->ring(), 4096, 256);
     if (!pool_result.has_value()) {
       throw std::runtime_error(pool_result.error().message);
     }
     auto& pool = *pool_result.value();
-    std::vector<ringu::RegisteredBuffer> bufs;
+    std::vector<dojio::RegisteredBuffer> bufs;
     bufs.reserve(256);
     for (std::int32_t i = 0; i < 256; ++i) {
       bufs.push_back(pool.borrow().value());
@@ -42,26 +42,26 @@ int main() {
   });
 
   bench.run("borrow + return 1 buffer x1000", [&] {
-    auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 4096, 8);
+    auto pool_result = dojio::RegisteredMemoryPool::create(engine->ring(), 4096, 8);
     if (!pool_result.has_value()) {
       throw std::runtime_error(pool_result.error().message);
     }
     auto& pool = *pool_result.value();
     for (std::int32_t i = 0; i < 1000; ++i) {
-      ringu::RegisteredBuffer buf = pool.borrow().value();
+      dojio::RegisteredBuffer buf = pool.borrow().value();
       ankerl::nanobench::doNotOptimizeAway(buf.data());
     }
     ankerl::nanobench::doNotOptimizeAway(pool.active_count());
   });
 
   bench.run("borrow + return 8 buffers x1000", [&] {
-    auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 4096, 8);
+    auto pool_result = dojio::RegisteredMemoryPool::create(engine->ring(), 4096, 8);
     if (!pool_result.has_value()) {
       throw std::runtime_error(pool_result.error().message);
     }
     auto& pool = *pool_result.value();
     for (std::int32_t i = 0; i < 1000; ++i) {
-      std::vector<ringu::RegisteredBuffer> bufs;
+      std::vector<dojio::RegisteredBuffer> bufs;
       bufs.reserve(8);
       for (std::int32_t j = 0; j < 8; ++j) {
         bufs.push_back(pool.borrow().value());

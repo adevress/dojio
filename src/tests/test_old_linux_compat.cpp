@@ -1,4 +1,4 @@
-// Built as its own target with -DRINGU_FORCE_LINUX_OLD_KERNEL, which makes the
+// Built as its own target with -DDOJIO_FORCE_LINUX_OLD_KERNEL, which makes the
 // dispatcher send the syscall-backed operations (bind/listen, ftruncate, pipe) down
 // the inline path even when the running kernel exposes
 // IORING_OP_BIND/LISTEN/FTRUNCATE/PIPE.
@@ -24,20 +24,20 @@
 
 #include <fmt/format.h>
 
-#include <ringu/result.hpp>
-#include <ringu/ring_engine.hpp>
+#include <dojio/result.hpp>
+#include <dojio/ring_engine.hpp>
 
 namespace {
 
 /// The whole point of this target: fail to build if the flag is not enforced.
-#if !defined(RINGU_FORCE_LINUX_OLD_KERNEL)
-#error "this target requires -DRINGU_FORCE_LINUX_OLD_KERNEL"
+#if !defined(DOJIO_FORCE_LINUX_OLD_KERNEL)
+#error "this target requires -DDOJIO_FORCE_LINUX_OLD_KERNEL"
 #endif
 
 std::string make_tmp_path(const std::string& tag) {
   static std::int32_t counter = 0;
   counter += 1;
-  return (std::filesystem::temp_directory_path() / fmt::format("ringu_test_{}_{}_{}", tag, ::getpid(), counter))
+  return (std::filesystem::temp_directory_path() / fmt::format("dojio_test_{}_{}_{}", tag, ::getpid(), counter))
       .string();
 }
 
@@ -52,14 +52,14 @@ std::string make_tmp_file(const std::string& tag, const std::string& content) {
 
 } // namespace
 
-TEST_CASE("RINGU_FORCE_LINUX_OLD_KERNEL runs bind/listen through the synchronous path") {
+TEST_CASE("DOJIO_FORCE_LINUX_OLD_KERNEL runs bind/listen through the synchronous path") {
   for (const bool sqpoll : {true, false}) {
     CAPTURE(sqpoll);
-    auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
+    auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
     REQUIRE(ring_engine_result.has_value());
     auto engine = std::move(ring_engine_result).value();
-    using Mode = ringu::RingEngine::ProcessMode;
-    using State = ringu::RingEngine::OperationState;
+    using Mode = dojio::RingEngine::ProcessMode;
+    using State = dojio::RingEngine::OperationState;
 
     const std::int32_t lfd = static_cast<std::int32_t>(::socket(AF_INET, SOCK_STREAM, 0));
     REQUIRE(lfd >= 0);
@@ -67,8 +67,8 @@ TEST_CASE("RINGU_FORCE_LINUX_OLD_KERNEL runs bind/listen through the synchronous
     ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
     bool bound = false;
-    engine->submit(ringu::bind(ringu::FileDescriptor{lfd}, ringu::Ipv4Endpoint::loopback(0)),
-                   [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::bind(dojio::FileDescriptor{lfd}, dojio::Ipv4Endpoint::loopback(0)),
+                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
                      bound = true;
@@ -77,8 +77,8 @@ TEST_CASE("RINGU_FORCE_LINUX_OLD_KERNEL runs bind/listen through the synchronous
     CHECK(bound);
 
     bool listened = false;
-    engine->submit(ringu::listen(ringu::FileDescriptor{lfd}, 16),
-                   [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::listen(dojio::FileDescriptor{lfd}, 16),
+                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
                      listened = true;
@@ -100,19 +100,19 @@ TEST_CASE("RINGU_FORCE_LINUX_OLD_KERNEL runs bind/listen through the synchronous
   }
 }
 
-TEST_CASE("RINGU_FORCE_LINUX_OLD_KERNEL runs ftruncate and pipe through the synchronous path") {
+TEST_CASE("DOJIO_FORCE_LINUX_OLD_KERNEL runs ftruncate and pipe through the synchronous path") {
   for (const bool sqpoll : {true, false}) {
     CAPTURE(sqpoll);
-    auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
+    auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
     REQUIRE(ring_engine_result.has_value());
     auto engine = std::move(ring_engine_result).value();
-    using Mode = ringu::RingEngine::ProcessMode;
-    using State = ringu::RingEngine::OperationState;
+    using Mode = dojio::RingEngine::ProcessMode;
+    using State = dojio::RingEngine::OperationState;
     const std::string path = make_tmp_file("old_linux_kernel", "0123456789");
 
-    ringu::FileDescriptor fd{-1};
-    engine->submit(ringu::open_at(path, O_RDWR),
-                   [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+    dojio::FileDescriptor fd{-1};
+    engine->submit(dojio::open_at(path, O_RDWR),
+                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
                      REQUIRE(r.has_value());
                      fd = *r;
                    });
@@ -120,13 +120,13 @@ TEST_CASE("RINGU_FORCE_LINUX_OLD_KERNEL runs ftruncate and pipe through the sync
     REQUIRE(fd.value() >= 0);
 
     // ftruncate runs inline (old kernel) and truncates the file
-    engine->submit(ringu::ftruncate(fd, 4), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::ftruncate(fd, 4), [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
       REQUIRE(r.has_value());
       CHECK(res == 0);
     });
     engine->process(Mode::Batch);
-    engine->submit(ringu::fstat(fd), std::vector<std::byte>(ringu::k_statx_size),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
                      const auto* st = reinterpret_cast<const struct stat*>(r->data());
@@ -135,9 +135,9 @@ TEST_CASE("RINGU_FORCE_LINUX_OLD_KERNEL runs ftruncate and pipe through the sync
     engine->process(Mode::Batch);
 
     // pipe runs inline (old kernel) and yields two usable descriptors
-    ringu::PipeBuffer pipe_fds{};
-    engine->submit(ringu::pipe(0), std::move(pipe_fds),
-                   [&](ringu::Result<ringu::PipeBuffer> r, ringu::OperationId, std::int32_t res) {
+    dojio::PipeBuffer pipe_fds{};
+    engine->submit(dojio::pipe(0), std::move(pipe_fds),
+                   [&](dojio::Result<dojio::PipeBuffer> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
                      pipe_fds = *r;
@@ -150,9 +150,9 @@ TEST_CASE("RINGU_FORCE_LINUX_OLD_KERNEL runs ftruncate and pipe through the sync
     REQUIRE(::read(pipe_fds[0].value(), buf.data(), buf.size()) == 2);
     CHECK(std::string(buf.data(), buf.size()) == "xy");
 
-    engine->submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
-    engine->submit(ringu::close(pipe_fds[0]), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
-    engine->submit(ringu::close(pipe_fds[1]), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(pipe_fds[0]), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(pipe_fds[1]), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
     engine->process(Mode::Batch);
     CHECK(engine->count_operations(State::Failed) == 0);
     ::unlink(path.c_str());

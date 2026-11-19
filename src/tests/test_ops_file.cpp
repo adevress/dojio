@@ -14,14 +14,14 @@
 #include <variant>
 #include <vector>
 
-#include <ringu/result.hpp>
-#include <ringu/ring_engine.hpp>
+#include <dojio/result.hpp>
+#include <dojio/ring_engine.hpp>
 
 namespace {
 
 std::string make_tmp_path(const std::string& tag) {
   static std::int32_t counter = 0;
-  return (std::filesystem::temp_directory_path() / fmt::format("ringu_test_{}_{}_{}", tag, ::getpid(), counter++))
+  return (std::filesystem::temp_directory_path() / fmt::format("dojio_test_{}_{}_{}", tag, ::getpid(), counter++))
       .string();
 }
 
@@ -46,19 +46,19 @@ std::string to_string(const std::vector<std::byte>& b) { return {reinterpret_cas
 TEST_CASE("open, write, pwrite, pread, read, fstat, close on a file") {
   for (const bool sqpoll : {true, false}) {
     CAPTURE(sqpoll);
-    auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
+    auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
     REQUIRE(ring_engine_result.has_value());
     auto engine = std::move(ring_engine_result).value();
     CHECK(engine->sqpoll_enabled() == sqpoll);
-    using Mode = ringu::RingEngine::ProcessMode;
-    using State = ringu::RingEngine::OperationState;
-    // "hello world ringu!" = 18 bytes
-    const std::string path = make_tmp_file("file_ops", "hello world ringu!");
+    using Mode = dojio::RingEngine::ProcessMode;
+    using State = dojio::RingEngine::OperationState;
+    // "hello world dojio!" = 18 bytes
+    const std::string path = make_tmp_file("file_ops", "hello world dojio!");
 
     // open
-    ringu::FileDescriptor fd{-1};
-    engine->submit(ringu::open_at(path, O_RDWR),
-                   [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t res) {
+    dojio::FileDescriptor fd{-1};
+    engine->submit(dojio::open_at(path, O_RDWR),
+                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res >= 0);
                      fd = *r;
@@ -68,8 +68,8 @@ TEST_CASE("open, write, pwrite, pread, read, fstat, close on a file") {
 
     // write at the current position (0): overwrite the first 4 bytes with "ABCD"
     std::int32_t written = -1;
-    engine->submit(ringu::write(fd), to_bytes("ABCD"),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::write(fd), to_bytes("ABCD"),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      written = res;
                    });
@@ -78,19 +78,19 @@ TEST_CASE("open, write, pwrite, pread, read, fstat, close on a file") {
 
     // pwrite at offset 8: "WXYZ" (does not move the current position)
     std::int32_t pwritten = -1;
-    engine->submit(ringu::pwrite(fd, 8), to_bytes("WXYZ"),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::pwrite(fd, 8), to_bytes("WXYZ"),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      pwritten = res;
                    });
     engine->process(Mode::Batch);
     CHECK(pwritten == 4);
-    // file is now "ABCDo woWXYZringu!"
+    // file is now "ABCDo woWXYZdojio!"
 
     // pread 8 bytes at offset 0
     std::string pread_out;
-    engine->submit(ringu::pread(fd, 0), std::vector<std::byte>(8),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::pread(fd, 0), std::vector<std::byte>(8),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 8);
                      CHECK(r->size() == 8); // buffer shrunk to the bytes read
@@ -101,8 +101,8 @@ TEST_CASE("open, write, pwrite, pread, read, fstat, close on a file") {
 
     // read at the current position (4 after the write): 6 bytes
     std::string read_out;
-    engine->submit(ringu::read(fd), std::vector<std::byte>(6),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::read(fd), std::vector<std::byte>(6),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 6);
                      read_out = to_string(*r);
@@ -111,8 +111,8 @@ TEST_CASE("open, write, pwrite, pread, read, fstat, close on a file") {
     CHECK(read_out == "o woWX");
 
     // fstat: the buffer (>= sizeof(statx)) receives a struct stat on success
-    engine->submit(ringu::fstat(fd), std::vector<std::byte>(ringu::k_statx_size),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
                      const auto* st = reinterpret_cast<const struct stat*>(r->data());
@@ -123,7 +123,7 @@ TEST_CASE("open, write, pwrite, pread, read, fstat, close on a file") {
 
     // close
     bool closed = false;
-    engine->submit(ringu::close(fd), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::close(fd), [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
       REQUIRE(r.has_value());
       CHECK(res == 0);
       closed = true;
@@ -142,15 +142,15 @@ TEST_CASE("open, write, pwrite, pread, read, fstat, close on a file") {
 TEST_CASE("pread into a std::array buffer") {
   for (const bool sqpoll : {true, false}) {
     CAPTURE(sqpoll);
-    auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
+    auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
     REQUIRE(ring_engine_result.has_value());
     auto engine = std::move(ring_engine_result).value();
     CHECK(engine->sqpoll_enabled() == sqpoll);
-    using Mode = ringu::RingEngine::ProcessMode;
+    using Mode = dojio::RingEngine::ProcessMode;
     const std::string path = make_tmp_file("array_buf", "0123456789");
-    ringu::FileDescriptor fd{-1};
-    engine->submit(ringu::open_at(path, O_RDONLY, 0),
-                   [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+    dojio::FileDescriptor fd{-1};
+    engine->submit(dojio::open_at(path, O_RDONLY, 0),
+                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
                      REQUIRE(r.has_value());
                      fd = *r;
                    });
@@ -158,15 +158,15 @@ TEST_CASE("pread into a std::array buffer") {
     REQUIRE(fd.value() >= 0);
 
     std::array<std::byte, 4> buf{};
-    engine->submit(ringu::pread(fd, 6), std::move(buf),
-                   [&](ringu::Result<std::array<std::byte, 4>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::pread(fd, 6), std::move(buf),
+                   [&](dojio::Result<std::array<std::byte, 4>> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 4);
                      const auto& b = *r;
                      CHECK(std::string{reinterpret_cast<const char*>(b.data()), b.size()} == "6789");
                    });
     engine->process(Mode::Batch);
-    engine->submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
     engine->process(Mode::Batch);
     ::unlink(path.c_str());
   }
@@ -175,20 +175,20 @@ TEST_CASE("pread into a std::array buffer") {
 TEST_CASE("open of a missing file fails with the mapped I/O code") {
   for (const bool sqpoll : {true, false}) {
     CAPTURE(sqpoll);
-    auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
+    auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
     REQUIRE(ring_engine_result.has_value());
     auto engine = std::move(ring_engine_result).value();
     CHECK(engine->sqpoll_enabled() == sqpoll);
-    using State = ringu::RingEngine::OperationState;
+    using State = dojio::RingEngine::OperationState;
     bool called = false;
-    engine->submit(ringu::open_at("/tmp/ringu_definitely_missing_file_xyz", O_RDONLY, 0),
-                   [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+    engine->submit(dojio::open_at("/tmp/dojio_definitely_missing_file_xyz", O_RDONLY, 0),
+                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
                      called = true;
                      CHECK_FALSE(r.has_value());
-                     REQUIRE(std::holds_alternative<ringu::IoError>(r.error()));
-                     CHECK(std::get<ringu::IoError>(r.error()).value == -ENOENT);
+                     REQUIRE(std::holds_alternative<dojio::IoError>(r.error()));
+                     CHECK(std::get<dojio::IoError>(r.error()).value == -ENOENT);
                    });
-    engine->process(ringu::RingEngine::ProcessMode::Batch);
+    engine->process(dojio::RingEngine::ProcessMode::Batch);
     CHECK(called);
     CHECK(engine->count_operations(State::Failed) == 1);
     CHECK(engine->count_operations(State::Completed) == 0);
@@ -198,30 +198,30 @@ TEST_CASE("open of a missing file fails with the mapped I/O code") {
 TEST_CASE("read on a closed fd fails with EBADF") {
   for (const bool sqpoll : {true, false}) {
     CAPTURE(sqpoll);
-    auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
+    auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
     REQUIRE(ring_engine_result.has_value());
     auto engine = std::move(ring_engine_result).value();
     CHECK(engine->sqpoll_enabled() == sqpoll);
-    using Mode = ringu::RingEngine::ProcessMode;
-    using State = ringu::RingEngine::OperationState;
+    using Mode = dojio::RingEngine::ProcessMode;
+    using State = dojio::RingEngine::OperationState;
     const std::string path = make_tmp_file("ebadf", "data");
-    ringu::FileDescriptor fd{-1};
-    engine->submit(ringu::open_at(path, O_RDONLY, 0),
-                   [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+    dojio::FileDescriptor fd{-1};
+    engine->submit(dojio::open_at(path, O_RDONLY, 0),
+                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
                      REQUIRE(r.has_value());
                      fd = *r;
                    });
     engine->process(Mode::Batch);
-    engine->submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
     engine->process(Mode::Batch);
 
     bool called = false;
-    engine->submit(ringu::pread(fd, 0), std::vector<std::byte>(4),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t) {
+    engine->submit(dojio::pread(fd, 0), std::vector<std::byte>(4),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t) {
                      called = true;
                      CHECK_FALSE(r.has_value());
-                     REQUIRE(std::holds_alternative<ringu::IoError>(r.error()));
-                     CHECK(std::get<ringu::IoError>(r.error()).value == -EBADF);
+                     REQUIRE(std::holds_alternative<dojio::IoError>(r.error()));
+                     CHECK(std::get<dojio::IoError>(r.error()).value == -EBADF);
                    });
     engine->process(Mode::Batch);
     CHECK(called);
@@ -233,17 +233,17 @@ TEST_CASE("read on a closed fd fails with EBADF") {
 TEST_CASE("ftruncate shrinks and grows a file") {
   for (const bool sqpoll : {true, false}) {
     CAPTURE(sqpoll);
-    auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
+    auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
     REQUIRE(ring_engine_result.has_value());
     auto engine = std::move(ring_engine_result).value();
     CHECK(engine->sqpoll_enabled() == sqpoll);
-    using Mode = ringu::RingEngine::ProcessMode;
-    using State = ringu::RingEngine::OperationState;
+    using Mode = dojio::RingEngine::ProcessMode;
+    using State = dojio::RingEngine::OperationState;
     const std::string path = make_tmp_file("ftruncate", "0123456789"); // 10 bytes
 
-    ringu::FileDescriptor fd{-1};
-    engine->submit(ringu::open_at(path, O_RDWR),
-                   [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+    dojio::FileDescriptor fd{-1};
+    engine->submit(dojio::open_at(path, O_RDWR),
+                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
                      REQUIRE(r.has_value());
                      fd = *r;
                    });
@@ -252,7 +252,7 @@ TEST_CASE("ftruncate shrinks and grows a file") {
 
     // shrink the file to 4 bytes
     bool truncated = false;
-    engine->submit(ringu::ftruncate(fd, 4), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::ftruncate(fd, 4), [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
       REQUIRE(r.has_value());
       CHECK(res == 0);
       truncated = true;
@@ -261,8 +261,8 @@ TEST_CASE("ftruncate shrinks and grows a file") {
     CHECK(truncated);
 
     // the file is now exactly 4 bytes long
-    engine->submit(ringu::fstat(fd), std::vector<std::byte>(ringu::k_statx_size),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
                      const auto* st = reinterpret_cast<const struct stat*>(r->data());
@@ -272,8 +272,8 @@ TEST_CASE("ftruncate shrinks and grows a file") {
 
     // reading past the end returns the 4 remaining bytes
     std::string shrunk;
-    engine->submit(ringu::pread(fd, 0), std::vector<std::byte>(8),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::pread(fd, 0), std::vector<std::byte>(8),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 4);
                      shrunk = to_string(*r);
@@ -282,13 +282,13 @@ TEST_CASE("ftruncate shrinks and grows a file") {
     CHECK(shrunk == "0123");
 
     // grow the file back to 12 bytes: the new bytes read as zeroes
-    engine->submit(ringu::ftruncate(fd, 12), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::ftruncate(fd, 12), [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
       REQUIRE(r.has_value());
       CHECK(res == 0);
     });
     engine->process(Mode::Batch);
-    engine->submit(ringu::fstat(fd), std::vector<std::byte>(ringu::k_statx_size),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
                      const auto* st = reinterpret_cast<const struct stat*>(r->data());
@@ -296,8 +296,8 @@ TEST_CASE("ftruncate shrinks and grows a file") {
                    });
     engine->process(Mode::Batch);
     std::string grown;
-    engine->submit(ringu::pread(fd, 4), std::vector<std::byte>(8),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+    engine->submit(dojio::pread(fd, 4), std::vector<std::byte>(8),
+                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 8);
                      grown = to_string(*r);
@@ -305,7 +305,7 @@ TEST_CASE("ftruncate shrinks and grows a file") {
     engine->process(Mode::Batch);
     CHECK(grown == std::string(8, '\0'));
 
-    engine->submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
     engine->process(Mode::Batch);
     CHECK(engine->count_operations(State::Failed) == 0);
     ::unlink(path.c_str());

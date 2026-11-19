@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
-project(ringu VERSION 0.1.0 LANGUAGES CXX)
+project(dojio VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
 include(GNUInstallDirs)
 
-option(RINGU_COVERAGE "Enable Ringu code coverage" OFF)
-option(RINGU_SANITIZER "Enable the sanitizer for testing and debug" OFF)
-option(RINGU_LTO_OPT "Enable LTO optimization" ON)
-option(RINGU_STATIC_BUILD "Produce static binaries" OFF)
+option(DOJIO_COVERAGE "Enable Dojio code coverage" OFF)
+option(DOJIO_SANITIZER "Enable the sanitizer for testing and debug" OFF)
+option(DOJIO_LTO_OPT "Enable LTO optimization" ON)
+option(DOJIO_STATIC_BUILD "Produce static binaries" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,7 +17,7 @@ if(NOT CMAKE_BUILD_TYPE)
 set(CMAKE_BUILD_TYPE "RelWithDebInfo")
 endif()
 
-list(APPEND RINGU_COMMON_FLAGS
+list(APPEND DOJIO_COMMON_FLAGS
     "-Wall"
     "-Wextra"
     "-Wno-missing-field-initializers"
@@ -28,35 +28,35 @@ list(APPEND RINGU_COMMON_FLAGS
     "-fwrapv"
 )
 
-if(RINGU_STATIC_BUILD)
-list(APPEND RINGU_COMMON_LINK_FLAGS
+if(DOJIO_STATIC_BUILD)
+list(APPEND DOJIO_COMMON_LINK_FLAGS
     "-static"
 )
 endif()
 
-if(RINGU_LTO_OPT)
-list(APPEND RINGU_COMMON_FLAGS
+if(DOJIO_LTO_OPT)
+list(APPEND DOJIO_COMMON_FLAGS
     "-flto"
 )
 endif()
 
-if(RINGU_SANITIZER)
-list(APPEND RINGU_COMMON_FLAGS
+if(DOJIO_SANITIZER)
+list(APPEND DOJIO_COMMON_FLAGS
     "-fsanitize=address"
     "-fsanitize=undefined"
 )
-list(APPEND RINGU_COMMON_LINK_FLAGS
+list(APPEND DOJIO_COMMON_LINK_FLAGS
     "-fsanitize=address"
     "-fsanitize=undefined"
 )
 endif()
 
-if(RINGU_COVERAGE)
-list(APPEND RINGU_COMMON_FLAGS
+if(DOJIO_COVERAGE)
+list(APPEND DOJIO_COMMON_FLAGS
     "-fprofile-arcs"
     "-ftest-coverage"
 )
-list(APPEND RINGU_COMMON_LINK_FLAGS
+list(APPEND DOJIO_COMMON_LINK_FLAGS
     "gcov"
 )
 endif()
@@ -70,38 +70,38 @@ add_subdirectory(src)
 ## install: public headers, static library, CMake package config and pkgconfig
 ##
 
-# the tl::expected header is installed alongside the ringu headers (it is a
+# the tl::expected header is installed alongside the dojio headers (it is a
 # header-only dependency); the build-tree target is not needed by consumers
-install(TARGETS ringu EXPORT ringuTargets
+install(TARGETS dojio EXPORT dojioTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-install(EXPORT ringuTargets
-    NAMESPACE ringu::
-    FILE ringuTargets.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ringu
+install(EXPORT dojioTargets
+    NAMESPACE dojio::
+    FILE dojioTargets.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dojio
 )
 
 include(CMakePackageConfigHelpers)
 configure_package_config_file(
-    cmake/ringuConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/ringuConfig.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ringu
+    cmake/dojioConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/dojioConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dojio
 )
 write_basic_package_version_file(
-    ${CMAKE_CURRENT_BINARY_DIR}/ringuConfigVersion.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/dojioConfigVersion.cmake
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMajorVersion
 )
 install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/ringuConfig.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/ringuConfigVersion.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ringu
+    ${CMAKE_CURRENT_BINARY_DIR}/dojioConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/dojioConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dojio
 )
 
-configure_file(ringu.pc.in ${CMAKE_CURRENT_BINARY_DIR}/ringu.pc @ONLY)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/ringu.pc
+configure_file(dojio.pc.in ${CMAKE_CURRENT_BINARY_DIR}/dojio.pc @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/dojio.pc
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
 )

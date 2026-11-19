@@ -1,14 +1,16 @@
-# ringu
+<p align="center">
+  <img src="misc/dojio-logo.png" alt="dojio logo" width="200">
+</p>
 
-[![gcc](https://img.shields.io/github/check-runs/adevress/ringu/main?nameFilter=gcc%20build%20%2B%20tests%20%2B%20benches&label=gcc)](https://github.com/adevress/ringu/actions/workflows/ci.yml)
-[![clang](https://img.shields.io/github/check-runs/adevress/ringu/main?nameFilter=clang%20build%20%2B%20tests%20%2B%20benches&label=clang)](https://github.com/adevress/ringu/actions/workflows/ci.yml)
-[![format](https://img.shields.io/github/check-runs/adevress/ringu/main?nameFilter=nix-format%20check&label=format)](https://github.com/adevress/ringu/actions/workflows/ci.yml)
+<p align="center">A high-performance io_uring interface for modern C++20.</p>
 
-A high-performance io_uring interface for modern C++20.
+[![gcc](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=gcc%20build%20%2B%20tests%20%2B%20benches&label=gcc)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
+[![clang](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=clang%20build%20%2B%20tests%20%2B%20benches&label=clang)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
+[![format](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=nix-format%20check&label=format)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
 
 ## Summary
 
-`ringu` is a header-and-static-library wrapper around the Linux `io_uring` kernel
+`dojio` is a header-and-static-library wrapper around the Linux `io_uring` kernel
 API, exposing it through a small, data-oriented C++20 interface. It is built
 directly on the raw kernel API (no liburing), with a focus on zero-copy moves,
 typed operation ids and a predictable completion model.
@@ -54,8 +56,8 @@ ninja -v
 
 The default build type is `RelWithDebInfo`. Build artifacts:
 
-- `libringu.a` — the static library.
-- `ringu_unit_tests` — the doctest unit-test binary.
+- `libdojio.a` — the static library.
+- `dojio_unit_tests` — the doctest unit-test binary.
 - `nanobench_ring_engine`, `nanobench_memory_pool` — benchmarks.
 - `demo_udp_pingpong`, `demo_tcp_hello`, `demo_file_rw` — demo programs.
 
@@ -63,12 +65,12 @@ The default build type is `RelWithDebInfo`. Build artifacts:
 
 | Option                 | Default | Description                              |
 | ---------------------- | ------- | ---------------------------------------- |
-| `RINGU_COVERAGE`       | `OFF`   | Enable code coverage instrumentation.    |
-| `RINGU_SANITIZER`      | `OFF`   | Enable AddressSanitizer/UBSan.           |
-| `RINGU_LTO_OPT`        | `ON`    | Enable link-time optimization.           |
-| `RINGU_STATIC_BUILD`   | `OFF`   | Produce fully static binaries.           |
+| `DOJIO_COVERAGE`       | `OFF`   | Enable code coverage instrumentation.    |
+| `DOJIO_SANITIZER`      | `OFF`   | Enable AddressSanitizer/UBSan.           |
+| `DOJIO_LTO_OPT`        | `ON`    | Enable link-time optimization.           |
+| `DOJIO_STATIC_BUILD`   | `OFF`   | Produce fully static binaries.           |
 
-Example: `cmake -G Ninja -DRINGU_SANITIZER=ON ../`
+Example: `cmake -G Ninja -DDOJIO_SANITIZER=ON ../`
 
 ### Tests
 
@@ -104,7 +106,7 @@ cmake --install . --prefix /path/to/prefix
 ```
 
 This installs the static library, the public headers, a CMake package config
-(`ringuConfig.cmake`, namespace `ringu::`) and a pkg-config file (`ringu.pc`).
+(`dojioConfig.cmake`, namespace `dojio::`) and a pkg-config file (`dojio.pc`).
 
 ### Formatting
 

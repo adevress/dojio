@@ -64,7 +64,7 @@ jobs:
               build_dir="build-ci-${{ matrix.compiler.name }}"
               cmake -G Ninja -S . -B "$build_dir" \
                 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-                -DRINGU_LTO_OPT=OFF \
+                -DDOJIO_LTO_OPT=OFF \
                 -DCMAKE_C_COMPILER="${{ matrix.compiler.cc }}" \
                 -DCMAKE_CXX_COMPILER="${{ matrix.compiler.cxx }}"
               cmake --build "$build_dir"

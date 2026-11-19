@@ -3,7 +3,7 @@
 // Creates <base>/test_demo_file_rw/serial/ with 40 files of 4 MiB using classical
 // blocking POSIX open/write/fsync/close, one file after another. Then creates
 // <base>/test_demo_file_rw/async/ with the same 40 files by submitting the opens,
-// writes, fsyncs and closes to a single ringu::RingEngine so that all 40 files
+// writes, fsyncs and closes to a single dojio::RingEngine so that all 40 files
 // progress concurrently. Every file is written from its own 4 MiB buffer, the 40
 // buffers being pre-filled with a deterministic Mersenne twister. The demo reports
 // the wall-clock time of both runs and removes the test directory afterwards.
@@ -26,7 +26,7 @@
 #include <string>
 #include <vector>
 
-#include <ringu/ringu.hpp>
+#include <dojio/dojio.hpp>
 
 namespace {
 
@@ -108,7 +108,7 @@ std::chrono::nanoseconds run_serial(const std::filesystem::path& directory,
 /// wall-clock time.
 std::chrono::nanoseconds run_async(const std::filesystem::path& directory,
                                    std::vector<std::vector<std::byte>>& buffers) {
-  auto engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 256});
+  auto engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 256});
   if (!engine_result.has_value()) {
     fmt::print(stderr, "async: ring engine: {}\n", engine_result.error().message);
     std::exit(1);
@@ -123,35 +123,35 @@ std::chrono::nanoseconds run_async(const std::filesystem::path& directory,
   const auto start = std::chrono::steady_clock::now();
   for (std::int32_t i = 0; i < k_file_count; ++i) {
     const std::string path = (directory / file_name(i)).string();
-    engine->submit(ringu::open_at(path, flags, mode), [&engine, &buffers, &completed, &failed,
-                                                       i](ringu::Result<ringu::FileDescriptor> opened,
-                                                          ringu::OperationId, std::int32_t) {
+    engine->submit(dojio::open_at(path, flags, mode), [&engine, &buffers, &completed, &failed,
+                                                       i](dojio::Result<dojio::FileDescriptor> opened,
+                                                          dojio::OperationId, std::int32_t) {
       if (!opened.has_value()) {
         failed += 1;
-        fmt::print(stderr, "async: open file {}: {}\n", i, std::get<ringu::IoError>(opened.error()).message());
+        fmt::print(stderr, "async: open file {}: {}\n", i, std::get<dojio::IoError>(opened.error()).message());
         return;
       }
       const std::int32_t fd = opened->value();
-      engine->submit(ringu::pwrite(ringu::FileDescriptor{fd}, 0), std::move(buffers[static_cast<std::size_t>(i)]),
-                     [&engine, &buffers, &completed, &failed, i, fd](ringu::Result<std::vector<std::byte>> written,
-                                                                     ringu::OperationId, std::int32_t result) {
+      engine->submit(dojio::pwrite(dojio::FileDescriptor{fd}, 0), std::move(buffers[static_cast<std::size_t>(i)]),
+                     [&engine, &buffers, &completed, &failed, i, fd](dojio::Result<std::vector<std::byte>> written,
+                                                                     dojio::OperationId, std::int32_t result) {
                        if (!written.has_value() || static_cast<std::uint64_t>(result) != k_file_size) {
                          failed += 1;
                          fmt::print(stderr, "async: write file {}\n", i);
                          return;
                        }
                        buffers[static_cast<std::size_t>(i)] = std::move(*written);
-                       engine->submit(ringu::fsync(ringu::FileDescriptor{fd}),
-                                      [&engine, &completed, &failed, i, fd](ringu::Result<std::int32_t> synced,
-                                                                            ringu::OperationId, std::int32_t) {
+                       engine->submit(dojio::fsync(dojio::FileDescriptor{fd}),
+                                      [&engine, &completed, &failed, i, fd](dojio::Result<std::int32_t> synced,
+                                                                            dojio::OperationId, std::int32_t) {
                                         if (!synced.has_value()) {
                                           failed += 1;
                                           fmt::print(stderr, "async: fsync file {}\n", i);
                                           return;
                                         }
-                                        engine->submit(ringu::close(ringu::FileDescriptor{fd}),
-                                                       [&completed, &failed](ringu::Result<std::int32_t> closed,
-                                                                             ringu::OperationId, std::int32_t) {
+                                        engine->submit(dojio::close(dojio::FileDescriptor{fd}),
+                                                       [&completed, &failed](dojio::Result<std::int32_t> closed,
+                                                                             dojio::OperationId, std::int32_t) {
                                                          if (!closed.has_value()) {
                                                            failed += 1;
                                                            return;
@@ -162,7 +162,7 @@ std::chrono::nanoseconds run_async(const std::filesystem::path& directory,
                      });
     });
   }
-  engine->process(ringu::RingEngine::ProcessMode::Batch);
+  engine->process(dojio::RingEngine::ProcessMode::Batch);
   const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
 
   if (failed != 0 || completed != k_file_count) {
@@ -192,7 +192,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
     fill_random(buffer, rng);
   }
 
-  fmt::print("ringu file write demo\n");
+  fmt::print("dojio file write demo\n");
   fmt::print("  base directory: {}\n", root.string());
   fmt::print("  payload: {} files x {} MiB from {} random buffers\n", k_file_count, k_file_size / (1024ULL * 1024ULL),
              k_file_count);
