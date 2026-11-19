@@ -39,6 +39,10 @@ applications on Linux, by:
 - Dependencies are fetched automatically: `doctest`, `nanobench`, `tl::expected`
   and `fmt` (used in header-only mode).
 
+### Portability
+
+Incoming
+
 ### Build
 
 ```sh

@@ -49,11 +49,12 @@ TEST_CASE("every operation has a free function returning a constructed operation
   CHECK(ringu::pread(fd, 42).fd == fd);
   CHECK(ringu::pread(fd, 42).offset == 42);
   CHECK(ringu::write(fd).fd == fd);
+  CHECK(ringu::pwrite(fd, 8).fd == fd);
   CHECK(ringu::pwrite(fd, 8).offset == 8);
-  const auto lseek = ringu::lseek(fd, 16, SEEK_SET);
-  CHECK(lseek.fd == fd);
-  CHECK(lseek.offset == 16);
-  CHECK(lseek.whence == SEEK_SET);
+  const auto ftruncate = ringu::ftruncate(fd, 4096);
+  CHECK(ftruncate.fd == fd);
+  CHECK(ftruncate.length == 4096);
+  CHECK(ringu::pipe(O_CLOEXEC).flags == O_CLOEXEC);
   CHECK(ringu::fstat(fd).fd == fd);
   CHECK(ringu::close(fd).fd == fd);
   CHECK(ringu::listen(fd, 128).backlog == 128);
@@ -61,12 +62,37 @@ TEST_CASE("every operation has a free function returning a constructed operation
   CHECK(accept.fd == fd);
   CHECK(accept.flags == 0);
   CHECK(accept.addr_len == 0);
+#if defined(MSG_NOSIGNAL)
+  // MSG_NOSIGNAL is Linux-specific: exercise the flags pass-through where available
   CHECK(ringu::send(fd, MSG_NOSIGNAL).flags == MSG_NOSIGNAL);
+#else
+  CHECK(ringu::send(fd, 0).flags == 0);
+#endif
   CHECK(ringu::recv(fd).fd == fd);
 
   const auto timeout = ringu::timeout(std::chrono::milliseconds(1500));
   CHECK(timeout.ts.sec == 1);
   CHECK(timeout.ts.nsec == 500000000);
+}
+
+TEST_CASE("extract_os_version caches the kernel version and drives the dispatcher") {
+  const ringu::detail::OsVersion& version = ringu::detail::extract_os_version();
+  // the version is cached in a function-local static: the same object is returned
+  CHECK(&version == &ringu::detail::extract_os_version());
+#if defined(__linux__)
+  CHECK(version.major > 0);
+  // the capability queries follow the kernel version thresholds
+  CHECK(ringu::detail::kernel_supports_bind_listen() ==
+        (version.major > 6 || (version.major == 6 && version.minor >= 11)));
+  CHECK(ringu::detail::kernel_supports_ftruncate() ==
+        (version.major > 6 || (version.major == 6 && version.minor >= 9)));
+  CHECK(ringu::detail::kernel_supports_pipe() == (version.major > 6 || (version.major == 6 && version.minor >= 16)));
+#else
+  CHECK(version.major == 0);
+  CHECK_FALSE(ringu::detail::kernel_supports_bind_listen());
+  CHECK_FALSE(ringu::detail::kernel_supports_ftruncate());
+  CHECK_FALSE(ringu::detail::kernel_supports_pipe());
+#endif
 }
 
 TEST_CASE("Accept submitted with a static AcceptBuffer receives the peer address") {

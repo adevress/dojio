@@ -12,6 +12,7 @@ enum class ErrorOpcode : std::uint32_t {
   MemoryPoolMmap = 3,            ///< mmap(2) of the pool backing memory failed
   MemoryPoolRegisterBuffers = 4, ///< io_uring_register(IORING_REGISTER_BUFFERS) failed
   MemoryPoolExhausted = 5,       ///< borrow() on an exhausted pool
+  NotSupported = 6,              ///< the operation is not supported on this platform
 };
 
 /// Error reported by the fallible operations of the library (e.g.

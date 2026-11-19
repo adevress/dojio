@@ -181,6 +181,7 @@ void copy_sqe(io_uring_sqe& dst, const Sqe& src) {
   case IoOp::ReadFixed:
   case IoOp::Write:
   case IoOp::WriteFixed:
+  case IoOp::Ftruncate:
     dst.off = src.off;
     break;
   case IoOp::Statx:
@@ -198,8 +199,15 @@ void copy_sqe(io_uring_sqe& dst, const Sqe& src) {
     dst.fsync_flags = src.op_flags;
     break;
   case IoOp::Connect:
-    // off and addr2 are the same union member: the connect address length
+  case IoOp::Bind:
+    // off and addr2 are the same union member: the connect / bind address length
     dst.addr2 = src.addr2;
+    break;
+  case IoOp::Pipe:
+    // pipe_flags shares its union slot with rw_flags; using rw_flags keeps the
+    // library compiling against older <linux/io_uring.h> that predate pipe_flags.
+    // rw_flags is __kernel_rwf_t (signed) on recent headers, hence the explicit cast.
+    dst.rw_flags = static_cast<decltype(dst.rw_flags)>(src.op_flags);
     break;
   case IoOp::Send:
   case IoOp::Recv:

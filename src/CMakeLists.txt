@@ -68,20 +68,46 @@ function(ringu_add_demo target_name)
 endfunction()
 
 # ringu static library (private header: ring.hpp holds the io_uring internals)
+#
+# io_uring is Linux-only: on every other POSIX system the RingEngine and the
+# registered memory pool are replaced by stubs that report NotSupported.
+set(RINGU_PLATFORM_SOURCES)
+set(RINGU_PLATFORM_HEADERS)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND RINGU_PLATFORM_SOURCES "ringu/ring.cpp" "ringu/ring_engine.cpp" "ringu/memory_pool.cpp")
+    list(APPEND RINGU_PLATFORM_HEADERS "ringu/ring.hpp")
+else()
+    list(APPEND RINGU_PLATFORM_SOURCES "ringu/ring_engine_stub.cpp" "ringu/memory_pool_stub.cpp")
+    list(APPEND RINGU_PLATFORM_HEADERS "ringu/io_uring_stub.hpp")
+endif()
+
 ringu_add_library(ringu
-    SOURCES "ringu/ring.cpp" "ringu/ring_engine.cpp" "ringu/memory_pool.cpp" "ringu/contracts.cpp" "ringu/ops.cpp"
-            "ringu/result.cpp" "ringu/socket.cpp"
-    HEADERS "ringu/ring.hpp"
+    SOURCES "ringu/version.cpp" "ringu/contracts.cpp" "ringu/ops.cpp" "ringu/result.cpp" "ringu/socket.cpp"
+            ${RINGU_PLATFORM_SOURCES}
+    HEADERS ${RINGU_PLATFORM_HEADERS}
 )
 
 # unit tests (doctest) — public API only
 ringu_add_test(ringu_unit_tests
     SOURCES "tests/entry_point_unit_test.cpp" "tests/test_contracts.cpp" "tests/test_result.cpp"
             "tests/test_fd_timer.cpp" "tests/test_memory_pool.cpp" "tests/test_operations.cpp"
-            "tests/test_ring_engine.cpp" "tests/test_ops_file.cpp" "tests/test_ops_socket.cpp" "tests/test_socket.cpp"
-            "tests/test_timer.cpp"
+            "tests/test_ring_engine.cpp" "tests/test_ops_file.cpp" "tests/test_ops_socket.cpp" "tests/test_ops_pipe.cpp"
+            "tests/test_socket.cpp" "tests/test_timer.cpp"
     LIBS ringu fmt::fmt
 )
+
+# the syscall-backed ops (bind/listen, ftruncate, pipe) are dispatched to io_uring when
+# the running kernel exposes their opcode and executed inline otherwise. On a recent
+# kernel the inline path would never run, so this target builds its test translation
+# unit with RINGU_FORCE_LINUX_OLD_KERNEL, which fakes an old kernel and forces the
+# inline path. io_uring is Linux-only, so the target is only meaningful there.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    ringu_add_test(ringu_old_linux_compat_tests
+        SOURCES "tests/entry_point_unit_test.cpp" "tests/test_old_linux_compat.cpp"
+        LIBS ringu fmt::fmt
+        DEFINITIONS RINGU_FORCE_LINUX_OLD_KERNEL
+    )
+endif()
 
 # benches (nanobench)
 ringu_add_bench(nanobench_ring_engine

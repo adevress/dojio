@@ -23,6 +23,10 @@ enum class IoOp : std::uint8_t {
   Write = 23,       // IORING_OP_WRITE
   Send = 26,        // IORING_OP_SEND
   Recv = 27,        // IORING_OP_RECV
+  Ftruncate = 55,   // IORING_OP_FTRUNCATE
+  Bind = 56,        // IORING_OP_BIND
+  Listen = 57,      // IORING_OP_LISTEN
+  Pipe = 62,        // IORING_OP_PIPE
 };
 
 /// Plain-old-data mirror of the kernel io_uring SQE fields used by ringu.

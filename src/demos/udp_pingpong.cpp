@@ -37,7 +37,8 @@ std::int32_t make_udp_socket(ringu::RingEngine& engine, sockaddr_in& bound_addr)
     std::perror("socket");
     std::exit(1);
   }
-  // bind through the RingEngine (inline Bind operation) to an ephemeral loopback port
+  // bind through the RingEngine (IORING_OP_BIND on a recent kernel, inline bind(2) otherwise) to an
+  // ephemeral loopback port
   bool bound = false;
   engine.submit(ringu::bind(ringu::FileDescriptor{fd}, ringu::Ipv4Endpoint::loopback(0)),
                 [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t) {
