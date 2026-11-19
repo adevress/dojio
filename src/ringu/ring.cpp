@@ -1,5 +1,6 @@
 #include <ringu/ring.hpp>
 
+#include <ringu/action.hpp>
 #include <ringu/contracts.hpp>
 
 #include <fmt/format.h>
@@ -43,11 +44,18 @@ void* map_ring(std::int32_t fd, std::uint64_t size, std::uint64_t offset) {
 
 } // namespace
 
+IoUring::IoUring(std::pmr::pool_options action_pool_options) : action_pool_(action_pool_options) {}
+
 tl::expected<std::unique_ptr<IoUring>, RinguError> IoUring::create(std::uint32_t entries, std::uint32_t setup_flags,
                                                                    std::uint32_t sq_thread_idle_ms) {
   enforce_precondition(entries > 0);
   enforce_precondition(entries <= k_max_entries);
-  auto ring = std::unique_ptr<IoUring>(new IoUring());
+  // the action pool is sized for max_size_action and for a chunk of at most one
+  // action per ring entry (RingEngineOptions::entries)
+  std::pmr::pool_options action_pool_options{};
+  action_pool_options.largest_required_pool_block = max_size_action;
+  action_pool_options.max_blocks_per_chunk = static_cast<std::size_t>(entries);
+  auto ring = std::unique_ptr<IoUring>(new IoUring(action_pool_options));
   auto setup_result = ring->setup(entries, setup_flags, sq_thread_idle_ms);
   if (!setup_result.has_value()) {
     return tl::unexpected(std::move(setup_result).error());

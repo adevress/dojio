@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <linux/io_uring.h>
 #include <memory>
+#include <memory_resource>
 #include <sys/uio.h>
 
 #include <tl/expected.hpp>
@@ -61,6 +62,11 @@ public:
   [[nodiscard]] std::uint32_t sq_entries() const { return params_.sq_entries; }
   [[nodiscard]] std::uint32_t cq_entries() const { return params_.cq_entries; }
 
+  /// Pool owned by the ring and used by the RingEngine to allocate its Action
+  /// objects. Its largest_required_pool_block is max_size_action and its
+  /// max_blocks_per_chunk is the ring size (RingEngineOptions::entries).
+  [[nodiscard]] std::pmr::unsynchronized_pool_resource& action_pool() noexcept { return action_pool_; }
+
   /// Reserves a zeroed SQE slot and records it in the submission queue array,
   /// but does NOT publish it to the kernel yet: the SQ tail is only advanced by
   /// publish_sqes(). The slot must be fully written before publish_sqes() —
@@ -86,7 +92,7 @@ public:
   void cq_advance(std::uint32_t n = 1);
 
 private:
-  IoUring() = default;
+  explicit IoUring(std::pmr::pool_options action_pool_options);
 
   /// Fallible setup: fills the members from io_uring_setup(2) + mmap(2). On
   /// failure returns the error and leaves the object in a destructible partial
@@ -94,6 +100,9 @@ private:
   tl::expected<void, RinguError> setup(std::uint32_t entries, std::uint32_t setup_flags,
                                        std::uint32_t sq_thread_idle_ms);
 
+  // the action pool is declared first so it is destroyed last: the BoxPtrs of the
+  // RingEngine pending map may deallocate into it while the engine is torn down
+  std::pmr::unsynchronized_pool_resource action_pool_;
   std::int32_t fd_ = -1;
   io_uring_params params_{};
   void* sq_ring_ = nullptr;
