@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <memory>
 #include <memory_resource>
-#include <new>
 #include <vector>
 
 #include <tl/expected.hpp>
@@ -22,16 +21,8 @@ class IoUring;
 
 namespace ringu {
 
-/// Cache line size used to align the pool chunks:
-/// std::hardware_destructive_interference_size when the implementation provides it
-/// (__cpp_lib_hardware_interference_size), 64 otherwise.
-[[nodiscard]] constexpr std::uint64_t cache_line_size() noexcept {
-#if defined(__cpp_lib_hardware_interference_size)
-  return static_cast<std::uint64_t>(std::hardware_destructive_interference_size);
-#else
-  return 64;
-#endif
-}
+/// Cache line size used to align the pool chunks (64 bytes).
+[[nodiscard]] std::uint64_t cache_line_size() noexcept;
 
 class RegisteredMemoryPool;
 
@@ -139,10 +130,9 @@ private:
   detail::IoUring& ring_; // the ring every chunk is registered with
   std::uint64_t buffer_size_;
   std::uint64_t count_;
-  std::uint64_t chunk_size_ = 0;      // cache-line aligned stride between two chunks
-  std::uint64_t cache_line_size_ = 0; // cache_line_size()
-  std::uint64_t page_size_ = 0;       // runtime page size (sysconf)
-  std::uint64_t mapped_size_ = 0;     // size of the whole mmap'ed page range
+  std::uint64_t chunk_size_ = 0;  // cache-line aligned stride between two chunks
+  std::uint64_t page_size_ = 0;   // runtime page size (sysconf)
+  std::uint64_t mapped_size_ = 0; // size of the whole mmap'ed page range
   std::byte* memory_ = nullptr;
   std::pmr::memory_resource* resource_;
   std::pmr::vector<std::uint8_t> free_; // internal booking: 1 = free, 0 = borrowed
