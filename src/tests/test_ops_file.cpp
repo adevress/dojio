@@ -43,7 +43,7 @@ std::string to_string(const std::vector<std::byte>& b) { return {reinterpret_cas
 
 } // namespace
 
-TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
+TEST_CASE("open, write, pwrite, pread, read, fstat, close on a file") {
   for (const bool sqpoll : {true, false}) {
     CAPTURE(sqpoll);
     auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
@@ -110,26 +110,8 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
     engine->process(Mode::Batch);
     CHECK(read_out == "o woWX");
 
-    // lseek back to 0, then read 4 bytes from position 0
-    std::int64_t new_pos = -1;
-    engine->submit(ringu::lseek(fd, 0, SEEK_SET), [&](ringu::Result<std::int64_t> r, ringu::OperationId, std::int32_t) {
-      REQUIRE(r.has_value());
-      new_pos = *r;
-    });
-    engine->process(Mode::Batch);
-    CHECK(new_pos == 0);
-    std::string read2_out;
-    engine->submit(ringu::read(fd), std::vector<std::byte>(4),
-                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
-                     REQUIRE(r.has_value());
-                     CHECK(res == 4);
-                     read2_out = to_string(*r);
-                   });
-    engine->process(Mode::Batch);
-    CHECK(read2_out == "ABCD");
-
     // fstat: the buffer (>= sizeof(statx)) receives a struct stat on success
-    engine->submit(ringu::fstat(fd), std::vector<std::byte>(sizeof(struct statx)),
+    engine->submit(ringu::fstat(fd), std::vector<std::byte>(ringu::k_statx_size),
                    [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
@@ -149,8 +131,8 @@ TEST_CASE("open, write, pwrite, pread, read, lseek, fstat, close on a file") {
     engine->process(Mode::Batch);
     CHECK(closed);
 
-    // open, write, pwrite, pread, read, lseek, read, fstat, close
-    CHECK(engine->count_operations(State::Completed) == 9);
+    // open, write, pwrite, pread, read, fstat, close
+    CHECK(engine->count_operations(State::Completed) == 7);
     CHECK(engine->count_operations(State::Failed) == 0);
     CHECK(engine->count_operations(State::Pending) == 0);
     ::unlink(path.c_str());
@@ -248,28 +230,84 @@ TEST_CASE("read on a closed fd fails with EBADF") {
   }
 }
 
-TEST_CASE("lseek on a pipe fails with ESPIPE") {
+TEST_CASE("ftruncate shrinks and grows a file") {
   for (const bool sqpoll : {true, false}) {
     CAPTURE(sqpoll);
     auto ring_engine_result = ringu::RingEngine::create(ringu::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
     REQUIRE(ring_engine_result.has_value());
     auto engine = std::move(ring_engine_result).value();
     CHECK(engine->sqpoll_enabled() == sqpoll);
+    using Mode = ringu::RingEngine::ProcessMode;
     using State = ringu::RingEngine::OperationState;
-    std::int32_t fds[2];
-    REQUIRE(::pipe(reinterpret_cast<int*>(fds)) == 0);
-    bool called = false;
-    engine->submit(ringu::lseek(ringu::FileDescriptor{fds[0]}, 0, SEEK_SET),
-                   [&](ringu::Result<std::int64_t> r, ringu::OperationId, std::int32_t) {
-                     called = true;
-                     CHECK_FALSE(r.has_value());
-                     REQUIRE(std::holds_alternative<ringu::IoError>(r.error()));
-                     CHECK(std::get<ringu::IoError>(r.error()).value == -ESPIPE);
+    const std::string path = make_tmp_file("ftruncate", "0123456789"); // 10 bytes
+
+    ringu::FileDescriptor fd{-1};
+    engine->submit(ringu::open_at(path, O_RDWR),
+                   [&](ringu::Result<ringu::FileDescriptor> r, ringu::OperationId, std::int32_t) {
+                     REQUIRE(r.has_value());
+                     fd = *r;
                    });
-    engine->process(ringu::RingEngine::ProcessMode::Batch);
-    CHECK(called);
-    CHECK(engine->count_operations(State::Failed) == 1);
-    ::close(fds[0]);
-    ::close(fds[1]);
+    engine->process(Mode::Batch);
+    REQUIRE(fd.value() >= 0);
+
+    // shrink the file to 4 bytes
+    bool truncated = false;
+    engine->submit(ringu::ftruncate(fd, 4), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+      REQUIRE(r.has_value());
+      CHECK(res == 0);
+      truncated = true;
+    });
+    engine->process(Mode::Batch);
+    CHECK(truncated);
+
+    // the file is now exactly 4 bytes long
+    engine->submit(ringu::fstat(fd), std::vector<std::byte>(ringu::k_statx_size),
+                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                     REQUIRE(r.has_value());
+                     CHECK(res == 0);
+                     const auto* st = reinterpret_cast<const struct stat*>(r->data());
+                     CHECK(st->st_size == 4);
+                   });
+    engine->process(Mode::Batch);
+
+    // reading past the end returns the 4 remaining bytes
+    std::string shrunk;
+    engine->submit(ringu::pread(fd, 0), std::vector<std::byte>(8),
+                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                     REQUIRE(r.has_value());
+                     CHECK(res == 4);
+                     shrunk = to_string(*r);
+                   });
+    engine->process(Mode::Batch);
+    CHECK(shrunk == "0123");
+
+    // grow the file back to 12 bytes: the new bytes read as zeroes
+    engine->submit(ringu::ftruncate(fd, 12), [&](ringu::Result<std::int32_t> r, ringu::OperationId, std::int32_t res) {
+      REQUIRE(r.has_value());
+      CHECK(res == 0);
+    });
+    engine->process(Mode::Batch);
+    engine->submit(ringu::fstat(fd), std::vector<std::byte>(ringu::k_statx_size),
+                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                     REQUIRE(r.has_value());
+                     CHECK(res == 0);
+                     const auto* st = reinterpret_cast<const struct stat*>(r->data());
+                     CHECK(st->st_size == 12);
+                   });
+    engine->process(Mode::Batch);
+    std::string grown;
+    engine->submit(ringu::pread(fd, 4), std::vector<std::byte>(8),
+                   [&](ringu::Result<std::vector<std::byte>> r, ringu::OperationId, std::int32_t res) {
+                     REQUIRE(r.has_value());
+                     CHECK(res == 8);
+                     grown = to_string(*r);
+                   });
+    engine->process(Mode::Batch);
+    CHECK(grown == std::string(8, '\0'));
+
+    engine->submit(ringu::close(fd), [](ringu::Result<std::int32_t>, ringu::OperationId, std::int32_t) {});
+    engine->process(Mode::Batch);
+    CHECK(engine->count_operations(State::Failed) == 0);
+    ::unlink(path.c_str());
   }
 }

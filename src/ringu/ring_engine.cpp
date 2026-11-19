@@ -52,7 +52,7 @@ bool RingEngine::cancel(OperationId id) {
   }
   ActionBase& action = *it->second;
   if (action.is_inline()) {
-    // inline operation (lseek/listen) not executed yet: cancel it directly
+    // inline operation (bind/listen/ftruncate/pipe on an old kernel) not executed yet: cancel it directly
     dispatch(id.value, -ECANCELED);
     return true;
   }

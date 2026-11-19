@@ -22,14 +22,50 @@ namespace detail {
 // Implemented in the library: they require POSIX / Linux headers, which are kept
 // out of the public headers.
 
-/// lseek(2) wrapper returning the raw result code (negated errno on failure).
-std::int32_t lseek_fd(std::int32_t fd, std::int64_t offset, std::int32_t whence);
 /// listen(2) wrapper returning the raw result code (negated errno on failure).
 std::int32_t listen_fd(std::int32_t fd, std::int32_t backlog);
 /// bind(2) wrapper returning the raw result code (negated errno on failure).
 std::int32_t bind_fd(std::int32_t fd, const void* addr, std::uint32_t addr_len);
+/// ftruncate(2) wrapper returning the raw result code (negated errno on failure).
+std::int32_t ftruncate_fd(std::int32_t fd, std::uint64_t length);
+/// pipe2(2) wrapper writing the two descriptors into fds; raw result code (negated errno on failure).
+std::int32_t pipe_fd(std::int32_t* fds, std::int32_t flags);
 /// Rewrites the first sizeof(struct stat) bytes of a statx-filled buffer as a struct stat.
 void statx_to_stat(std::byte* data, std::uint64_t size);
+
+/// A parsed Linux kernel version (major.minor.patch), as reported by uname(2).
+struct OsVersion {
+  std::int32_t major = 0;
+  std::int32_t minor = 0;
+  std::int32_t patch = 0;
+};
+
+/// The running kernel version, extracted from uname(2).release and cached in a
+/// function-local static variable (thread-safe C++11 initialization); the returned
+/// reference is stable for the lifetime of the process. Returns 0.0.0 on
+/// non-Linux platforms.
+const OsVersion& extract_os_version();
+
+/// True when the running kernel exposes IORING_OP_BIND / IORING_OP_LISTEN (Linux 6.11+).
+bool kernel_supports_bind_listen();
+/// True when the running kernel exposes IORING_OP_FTRUNCATE (Linux 6.9+).
+bool kernel_supports_ftruncate();
+/// True when the running kernel exposes IORING_OP_PIPE (Linux 6.16+).
+bool kernel_supports_pipe();
+
+/// True when the dispatcher must assume a kernel too old to expose the syscall-backed
+/// io_uring opcodes (IORING_OP_BIND/LISTEN, IORING_OP_FTRUNCATE, IORING_OP_PIPE), so
+/// that the affected operations take their inline (syscall) path. Defining
+/// RINGU_FORCE_LINUX_OLD_KERNEL at build time makes this always true, which is how
+/// the inline path is covered on a recent kernel (see the
+/// ringu_old_linux_compat_tests target).
+[[nodiscard]] constexpr bool simulated_old_kernel() {
+#if defined(RINGU_FORCE_LINUX_OLD_KERNEL)
+  return true;
+#else
+  return false;
+#endif
+}
 
 } // namespace detail
 
@@ -59,8 +95,8 @@ template <typename Buffer> struct result_value<FsyncOp, Buffer> {
 template <typename Buffer> struct result_value<ConnectOp, Buffer> {
   using type = std::int32_t;
 };
-template <typename Buffer> struct result_value<LseekOp, Buffer> {
-  using type = std::int64_t;
+template <typename Buffer> struct result_value<FtruncateOp, Buffer> {
+  using type = std::int32_t;
 };
 template <typename Buffer> struct result_value<CloseOp, Buffer> {
   using type = std::int32_t;
@@ -87,8 +123,11 @@ public:
 
   [[nodiscard]] OperationId id() const { return id_; }
 
-  /// True when the operation has no io_uring opcode and is executed synchronously
-  /// by the RingEngine when the current batch is processed.
+  /// True when the operation is executed synchronously by the RingEngine when the
+  /// current batch is processed, instead of being pushed to the kernel ring. The
+  /// Action decides this at submission time (see compute_inline): an operation with
+  /// an io_uring opcode is inline only when the running kernel does not expose it (or
+  /// when the build simulates an old kernel, see RINGU_FORCE_LINUX_OLD_KERNEL).
   [[nodiscard]] virtual bool is_inline() const { return false; }
 
   /// Executes an inline operation, returning the raw result code.
@@ -128,19 +167,23 @@ public:
   using Value = result_value_t<Op, Buffer>;
 
   Action(OperationId id, Op op, Buffer buffer, Callback callback, bool timer)
-      : ActionBase(id, timer), op_(std::move(op)), buffer_(std::move(buffer)), callback_(std::move(callback)) {}
+      : ActionBase(id, timer), op_(std::move(op)), buffer_(std::move(buffer)), callback_(std::move(callback)),
+        inline_(compute_inline()) {}
 
-  [[nodiscard]] bool is_inline() const override { return InlineOperation<Op>; }
+  [[nodiscard]] bool is_inline() const override { return inline_; }
 
   std::int32_t execute_inline() override {
-    if constexpr (std::is_same_v<Op, LseekOp>) {
-      return detail::lseek_fd(op_.fd.value(), op_.offset, op_.whence);
-    } else if constexpr (std::is_same_v<Op, ListenOp>) {
+    if constexpr (std::is_same_v<Op, ListenOp>) {
       return detail::listen_fd(op_.fd.value(), op_.backlog);
     } else if constexpr (std::is_same_v<Op, BindOp>) {
       return detail::bind_fd(op_.fd.value(), op_.addr.data(), op_.addr_len);
+    } else if constexpr (std::is_same_v<Op, FtruncateOp>) {
+      return detail::ftruncate_fd(op_.fd.value(), op_.length);
+    } else if constexpr (std::is_same_v<Op, PipeOp>) {
+      return detail::pipe_fd(reinterpret_cast<std::int32_t*>(buffer_.data()), op_.flags);
     } else {
-      // only lseek, listen and bind are inline operations; anything else reaching here is a bug
+      // only listen, bind, ftruncate and pipe can be dispatched inline; anything
+      // else reaching here is a bug
       unreachable();
     }
   }
@@ -256,8 +299,47 @@ private:
       sqe.addr = reinterpret_cast<std::uint64_t>(&op_.ts);
       sqe.len = 1;
       sqe.op_flags = 0;
+    } else if constexpr (std::is_same_v<Op, FtruncateOp>) {
+      sqe.opcode = static_cast<std::uint8_t>(IoOp::Ftruncate);
+      sqe.fd = op_.fd.value();
+      sqe.off = op_.length;
+    } else if constexpr (std::is_same_v<Op, ListenOp>) {
+      sqe.opcode = static_cast<std::uint8_t>(IoOp::Listen);
+      sqe.fd = op_.fd.value();
+      sqe.len = static_cast<std::uint32_t>(op_.backlog);
+    } else if constexpr (std::is_same_v<Op, BindOp>) {
+      sqe.opcode = static_cast<std::uint8_t>(IoOp::Bind);
+      sqe.fd = op_.fd.value();
+      sqe.addr = reinterpret_cast<std::uint64_t>(op_.addr.data());
+      sqe.addr2 = op_.addr_len;
+    } else if constexpr (std::is_same_v<Op, PipeOp>) {
+      // IORING_OP_PIPE writes the two descriptors into *addr (fd must be 0)
+      sqe.opcode = static_cast<std::uint8_t>(IoOp::Pipe);
+      sqe.fd = 0;
+      sqe.addr = reinterpret_cast<std::uint64_t>(buffer_.data());
+      sqe.len = 0;
+      sqe.op_flags = static_cast<std::uint32_t>(op_.flags);
     }
-    // lseek, listen and bind have no io_uring opcode: they are executed inline.
+    // listen, bind, ftruncate and pipe have no io_uring opcode on older kernels:
+    // is_inline() decides per operation whether they are executed synchronously.
+  }
+
+  /// Dispatcher run at submission time: a syscall-backed operation goes to the
+  /// io_uring submission queue when the running kernel exposes its opcode, and is
+  /// executed synchronously (inline) when it does not. detail::simulated_old_kernel()
+  /// forces the inline path as well when RINGU_FORCE_LINUX_OLD_KERNEL is defined.
+  static bool compute_inline() {
+    if constexpr (InlineOperation<Op>) {
+      return true;
+    } else if constexpr (std::is_same_v<Op, ListenOp> || std::is_same_v<Op, BindOp>) {
+      return detail::simulated_old_kernel() || !detail::kernel_supports_bind_listen();
+    } else if constexpr (std::is_same_v<Op, FtruncateOp>) {
+      return detail::simulated_old_kernel() || !detail::kernel_supports_ftruncate();
+    } else if constexpr (std::is_same_v<Op, PipeOp>) {
+      return detail::simulated_old_kernel() || !detail::kernel_supports_pipe();
+    } else {
+      return false;
+    }
   }
 
   Value make_value(std::int32_t res) {
@@ -293,6 +375,7 @@ private:
   Op op_;
   Buffer buffer_;
   Callback callback_;
+  bool inline_ = false;
 };
 
 } // namespace ringu

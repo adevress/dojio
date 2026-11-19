@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -76,22 +77,36 @@ struct PwriteOp {
 /// Constructs a PwriteOp operation (write at an explicit offset).
 inline PwriteOp pwrite(FileDescriptor fd, std::uint64_t offset) { return PwriteOp{fd, offset}; }
 
-/// Seeks in fd (lseek(2) semantics). Completes with the new offset.
+/// Truncates fd to length bytes (ftruncate(2) semantics). Completes with 0.
 ///
-/// No io_uring opcode exists for lseek: the RingEngine executes it synchronously
-/// when the current batch is processed.
-struct LseekOp {
-  static constexpr bool is_inline = true;
-
+/// The RingEngine uses IORING_OP_FTRUNCATE when the running kernel exposes it
+/// (Linux 6.9+) and falls back to a synchronous ftruncate(2) otherwise.
+struct FtruncateOp {
   FileDescriptor fd;
-  std::int64_t offset = 0;
-  std::int32_t whence = 0;
+  std::uint64_t length = 0;
 };
 
-/// Constructs an LseekOp operation (lseek(2) semantics).
-inline LseekOp lseek(FileDescriptor fd, std::int64_t offset, std::int32_t whence) {
-  return LseekOp{fd, offset, whence};
-}
+/// Constructs a FtruncateOp operation (ftruncate(2) semantics).
+inline FtruncateOp ftruncate(FileDescriptor fd, std::uint64_t length) { return FtruncateOp{fd, length}; }
+
+/// Number of file descriptors produced by a Pipe operation.
+inline constexpr std::uint64_t k_pipe_fd_count = 2;
+
+/// Buffer receiving the two descriptors created by a Pipe operation: index 0 is
+/// the read end, index 1 the write end.
+using PipeBuffer = std::array<FileDescriptor, k_pipe_fd_count>;
+
+/// Creates a pipe (pipe2(2) semantics). The two descriptors are written into the
+/// submitted PipeBuffer and the operation completes with 0.
+///
+/// The RingEngine uses IORING_OP_PIPE when the running kernel exposes it
+/// (Linux 6.16+) and falls back to a synchronous pipe2(2) otherwise.
+struct PipeOp {
+  std::int32_t flags = 0;
+};
+
+/// Constructs a PipeOp operation (pipe2(2) semantics); flags are the pipe2(2) flags.
+inline PipeOp pipe(std::int32_t flags = 0) { return PipeOp{flags}; }
 
 /// Stats fd (fstat(2) semantics) through IORING_OP_STATX with AT_EMPTY_PATH.
 ///
@@ -114,11 +129,9 @@ inline CloseOp close(FileDescriptor fd) { return CloseOp{fd}; }
 
 /// Marks a socket as passive (listen(2) semantics).
 ///
-/// No io_uring opcode exists for listen: the RingEngine executes it synchronously
-/// when the current batch is processed.
+/// The RingEngine uses IORING_OP_LISTEN when the running kernel exposes it
+/// (Linux 6.11+) and falls back to a synchronous listen(2) otherwise.
 struct ListenOp {
-  static constexpr bool is_inline = true;
-
   FileDescriptor fd;
   std::int32_t backlog = 0;
 };
@@ -176,14 +189,12 @@ inline FsyncOp fsync(FileDescriptor fd, bool use_datasync = false) { return Fsyn
 
 /// bind(2) on fd to an IPv4 or IPv6 endpoint. Completes with 0 on success.
 ///
-/// No io_uring opcode exists for bind: the RingEngine executes it synchronously
-/// when the current batch is processed.
+/// The RingEngine uses IORING_OP_BIND when the running kernel exposes it
+/// (Linux 6.11+) and falls back to a synchronous bind(2) otherwise.
 ///
 /// The sockaddr_in / sockaddr_in6 is stored inside the operation (static buffer),
 /// so no C socket type appears in the public API.
 struct BindOp {
-  static constexpr bool is_inline = true;
-
   FileDescriptor fd;
   std::variant<Ipv4Endpoint, Ipv6Endpoint> endpoint;
   StaticBuffer<k_sockaddr_storage_size> addr{}; // sockaddr_in / sockaddr_in6 storage, filled by the factory
@@ -228,8 +239,8 @@ inline TimeoutOp timeout(std::chrono::nanoseconds duration) {
 
 /// Variant of every operation supported by the RingEngine. Each operation is its own
 /// struct held by this variant.
-using Operation = std::variant<OpenAtOp, ReadOp, PreadOp, WriteOp, PwriteOp, LseekOp, FstatOp, CloseOp, ListenOp,
-                               AcceptOp, SendOp, RecvOp, TimeoutOp, FsyncOp, ConnectOp, BindOp>;
+using Operation = std::variant<OpenAtOp, ReadOp, PreadOp, WriteOp, PwriteOp, FtruncateOp, FstatOp, CloseOp, ListenOp,
+                               AcceptOp, SendOp, RecvOp, TimeoutOp, FsyncOp, ConnectOp, BindOp, PipeOp>;
 
 /// True when Op is one of the operation structs of the Operation variant.
 template <typename Op>
@@ -237,11 +248,12 @@ inline constexpr bool is_operation_v =
     std::is_same_v<std::decay_t<Op>, OpenAtOp> || std::is_same_v<std::decay_t<Op>, FsyncOp> ||
     std::is_same_v<std::decay_t<Op>, ConnectOp> || std::is_same_v<std::decay_t<Op>, ReadOp> ||
     std::is_same_v<std::decay_t<Op>, PreadOp> || std::is_same_v<std::decay_t<Op>, WriteOp> ||
-    std::is_same_v<std::decay_t<Op>, PwriteOp> || std::is_same_v<std::decay_t<Op>, LseekOp> ||
+    std::is_same_v<std::decay_t<Op>, PwriteOp> || std::is_same_v<std::decay_t<Op>, FtruncateOp> ||
     std::is_same_v<std::decay_t<Op>, FstatOp> || std::is_same_v<std::decay_t<Op>, CloseOp> ||
     std::is_same_v<std::decay_t<Op>, ListenOp> || std::is_same_v<std::decay_t<Op>, AcceptOp> ||
     std::is_same_v<std::decay_t<Op>, SendOp> || std::is_same_v<std::decay_t<Op>, RecvOp> ||
-    std::is_same_v<std::decay_t<Op>, TimeoutOp> || std::is_same_v<std::decay_t<Op>, BindOp>;
+    std::is_same_v<std::decay_t<Op>, TimeoutOp> || std::is_same_v<std::decay_t<Op>, BindOp> ||
+    std::is_same_v<std::decay_t<Op>, PipeOp>;
 
 /// True when the operation transfers data through the submitted buffer.
 template <typename Op>
@@ -249,7 +261,8 @@ inline constexpr bool uses_buffer_v =
     std::is_same_v<std::decay_t<Op>, ReadOp> || std::is_same_v<std::decay_t<Op>, PreadOp> ||
     std::is_same_v<std::decay_t<Op>, WriteOp> || std::is_same_v<std::decay_t<Op>, PwriteOp> ||
     std::is_same_v<std::decay_t<Op>, FstatOp> || std::is_same_v<std::decay_t<Op>, AcceptOp> ||
-    std::is_same_v<std::decay_t<Op>, SendOp> || std::is_same_v<std::decay_t<Op>, RecvOp>;
+    std::is_same_v<std::decay_t<Op>, SendOp> || std::is_same_v<std::decay_t<Op>, RecvOp> ||
+    std::is_same_v<std::decay_t<Op>, PipeOp>;
 
 /// True for the operations that have no io_uring opcode and are therefore executed
 /// synchronously by the RingEngine when the current batch is processed. An operation

@@ -165,7 +165,9 @@ private:
   /// Copies every queued SQE mirror onto the kernel submission queue and submits it;
   /// when min_complete > 0, also waits for at least that many completions.
   void flush(std::uint32_t min_complete);
-  /// Executes the inline operations (lseek/listen) and dispatches them.
+  /// Executes the operations dispatched inline at submission time (a syscall-backed
+  /// operation on a kernel that does not expose its io_uring opcode, see
+  /// detail::simulated_old_kernel) and dispatches them.
   void run_inline_pending();
   /// Reaps every available completion and dispatches it.
   void reap_and_dispatch();

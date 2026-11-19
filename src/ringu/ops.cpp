@@ -2,27 +2,20 @@
 
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/sysmacros.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <cstring>
 
+#if defined(__linux__)
 #include <linux/stat.h>
+#include <sys/sysmacros.h>
+#endif
 
 // Library-side implementations of the small helpers declared in the public
 // headers. This translation unit is where the POSIX / Linux types live.
 
 namespace ringu::detail {
-
-std::int32_t lseek_fd(std::int32_t fd, std::int64_t offset, std::int32_t whence) {
-  // lseek(2) uses off_t (C ABI boundary)
-  const off_t ret = ::lseek(fd, static_cast<off_t>(offset), whence);
-  if (ret == static_cast<off_t>(-1)) {
-    return -errno;
-  }
-  return static_cast<std::int32_t>(ret);
-}
 
 std::int32_t listen_fd(std::int32_t fd, std::int32_t backlog) {
   if (::listen(fd, backlog) != 0) {
@@ -39,7 +32,31 @@ std::int32_t bind_fd(std::int32_t fd, const void* addr, std::uint32_t addr_len) 
   return 0;
 }
 
+std::int32_t ftruncate_fd(std::int32_t fd, std::uint64_t length) {
+  // ftruncate(2) uses off_t (C ABI boundary)
+  if (::ftruncate(fd, static_cast<off_t>(length)) != 0) {
+    return -errno;
+  }
+  return 0;
+}
+
+std::int32_t pipe_fd(std::int32_t* fds, std::int32_t flags) {
+#if defined(__linux__)
+  if (::pipe2(fds, flags) != 0) {
+    return -errno;
+  }
+#else
+  // pipe2(2) is Linux-specific: fall back to pipe(2) and ignore the flags
+  (void)flags;
+  if (::pipe(fds) != 0) {
+    return -errno;
+  }
+#endif
+  return 0;
+}
+
 void statx_to_stat(std::byte* data, std::uint64_t size) {
+#if defined(__linux__)
   if (size < static_cast<std::uint64_t>(sizeof(struct statx))) {
     return;
   }
@@ -63,6 +80,11 @@ void statx_to_stat(std::byte* data, std::uint64_t size) {
   tmp.st_ctim.tv_sec = static_cast<decltype(tmp.st_ctim.tv_sec)>(stx->stx_ctime.tv_sec);
   tmp.st_ctim.tv_nsec = static_cast<decltype(tmp.st_ctim.tv_nsec)>(stx->stx_ctime.tv_nsec);
   *st = tmp;
+#else
+  // statx(2) is Linux-specific: there is no statx buffer to rewrite on other platforms
+  (void)data;
+  (void)size;
+#endif
 }
 
 } // namespace ringu::detail
