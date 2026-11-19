@@ -25,7 +25,8 @@ tl::expected<std::unique_ptr<RingEngine>, RinguError> RingEngine::create(RingEng
   return std::unique_ptr<RingEngine>(new RingEngine(std::move(ring).value()));
 }
 
-RingEngine::RingEngine(std::unique_ptr<detail::IoUring> ring) : ring_(std::move(ring)), pending_(&pool_resource_) {
+RingEngine::RingEngine(std::unique_ptr<detail::IoUring> ring)
+    : ring_(std::move(ring)), action_pool_(&ring_->action_pool()), pending_(&pool_resource_) {
   // preallocate the dispatch scratch buffer from the ring size: the completion
   // ring can hold at most cq_entries events at once, and the submission ring
   // bounds the number of queued operations

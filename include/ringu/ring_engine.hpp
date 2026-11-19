@@ -13,6 +13,7 @@
 #include <tl/expected.hpp>
 
 #include <ringu/action.hpp>
+#include <ringu/box_ptr.hpp>
 #include <ringu/contracts.hpp>
 #include <ringu/error.hpp>
 #include <ringu/operation_id.hpp>
@@ -150,8 +151,11 @@ private:
   OperationId do_submit(Op op, Buffer buffer, Callback callback, bool timer) {
     const OperationId id{next_id_};
     next_id_ += 1;
-    auto action = std::make_unique<Action<Op, Buffer, Callback>>(id, std::move(op), std::move(buffer),
-                                                                 std::move(callback), timer);
+    using ActionType = Action<Op, Buffer, Callback>;
+    static_assert(sizeof(ActionType) <= max_size_action,
+                  "Action exceeds max_size_action: shrink the callback / buffer or raise max_size_action");
+    std::pmr::polymorphic_allocator<ActionType> allocator{action_pool_};
+    auto action = BoxPtr<ActionType>::make(allocator, id, std::move(op), std::move(buffer), std::move(callback), timer);
     if (!action->is_inline()) {
       // fill the SQE mirror now; the RingEngine copies it onto the kernel ring at flush
       action->fill();
@@ -180,13 +184,16 @@ private:
 
   // pimpl: the io_uring ring lives in the library
   std::unique_ptr<detail::IoUring> ring_;
+  // pool owned by the ring, used to allocate the Action objects (actions are made
+  // with BoxPtr so the allocation size follows the concrete Action type)
+  std::pmr::unsynchronized_pool_resource* action_pool_ = nullptr;
   std::pmr::unsynchronized_pool_resource pool_resource_;
-  std::pmr::unordered_map<std::uint64_t, std::unique_ptr<ActionBase>> pending_;
+  std::pmr::unordered_map<std::uint64_t, BoxPtr<ActionBase>> pending_;
   // Scratch buffer for the dispatch loops, preallocated once from the ring
   // size in the constructor so run_inline_pending()/reap_and_dispatch() never
   // reallocate on the hot path. Both loops extract the completed actions from
   // pending_ into it before running the completion handlers.
-  std::vector<std::pair<std::unique_ptr<ActionBase>, std::int32_t>> done_;
+  std::vector<std::pair<BoxPtr<ActionBase>, std::int32_t>> done_;
   std::uint64_t next_id_ = 1;
   std::uint64_t in_flight_ = 0;
   std::uint64_t completed_ = 0;

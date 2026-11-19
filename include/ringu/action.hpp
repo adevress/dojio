@@ -372,4 +372,10 @@ private:
   bool inline_ = false;
 };
 
+/// Upper bound on the size of a single Action, used as the largest_required_pool_block
+/// of the RingEngine action pool. It is roughly 50% above the average action size
+/// (the demo Send / Recv actions measure about 136 B / 192 B). do_submit() rejects
+/// any submission whose Action type exceeds it with a static_assert.
+inline constexpr std::size_t max_size_action = 320;
+
 } // namespace ringu
