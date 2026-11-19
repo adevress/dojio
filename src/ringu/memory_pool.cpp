@@ -19,14 +19,14 @@ namespace ringu {
 namespace {
 
 // sysconf(3) returns long (C API boundary); narrowed with an explicit cast.
-// (The cache line size has a portable standard equivalent, see cache_line_size()
-// in the header, used instead.)
 std::uint64_t query_page_size() {
   const long v = ::sysconf(_SC_PAGESIZE);
   return v > 0 ? static_cast<std::uint64_t>(v) : std::uint64_t{4096};
 }
 
 } // namespace
+
+std::uint64_t cache_line_size() noexcept { return 64; }
 
 RegisteredBuffer::RegisteredBuffer(RegisteredMemoryPool& pool, std::uint64_t index) : pool_(&pool), index_(index) {}
 
@@ -75,11 +75,10 @@ RegisteredMemoryPool::create(detail::IoUring& ring, std::uint64_t buffer_size, s
 RegisteredMemoryPool::RegisteredMemoryPool(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
                                            std::pmr::memory_resource* resource)
     : ring_(ring), buffer_size_(buffer_size), count_(count), resource_(resource), free_(count, 1, resource) {
-  // portable cache line size (std::hardware_destructive_interference_size when available)
-  cache_line_size_ = ringu::cache_line_size();
   page_size_ = query_page_size();
   // every chunk starts on a cache-line boundary: round the stride up to the cache line size
-  chunk_size_ = (buffer_size_ + cache_line_size_ - 1) / cache_line_size_ * cache_line_size_;
+  const std::uint64_t cache_line = cache_line_size();
+  chunk_size_ = (buffer_size_ + cache_line - 1) / cache_line * cache_line;
   enforce_precondition(count_ <= std::numeric_limits<std::uint64_t>::max() / chunk_size_);
   const std::uint64_t total = chunk_size_ * count_;
   enforce_precondition(total <= std::numeric_limits<std::uint64_t>::max() - page_size_ + 1);

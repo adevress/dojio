@@ -54,7 +54,7 @@ TEST_CASE("RegisteredMemoryPool borrow/return tracks the active counter") {
     CHECK(pool.active_count() == 1);
     std::memset(buf.data(), 0xAB, buf.size());
     // the backing memory is whole mmap'ed pages, every chunk is cache-line aligned
-    constexpr std::size_t cache_line = ringu::cache_line_size();
+    const std::size_t cache_line = ringu::cache_line_size();
     const long page = ::sysconf(_SC_PAGESIZE);
     CHECK(reinterpret_cast<std::uintptr_t>(pool.base()) % static_cast<std::uintptr_t>(page) == 0);
     CHECK(reinterpret_cast<std::uintptr_t>(buf.data()) % static_cast<std::uintptr_t>(cache_line) == 0);
@@ -70,7 +70,7 @@ TEST_CASE("chunks are cache-line aligned even when buffer_size is not a multiple
   auto pool_result = ringu::RegisteredMemoryPool::create(engine->ring(), 100, 4);
   REQUIRE(pool_result.has_value());
   auto& pool = *pool_result.value();
-  constexpr std::size_t cache_line = ringu::cache_line_size();
+  const std::size_t cache_line = ringu::cache_line_size();
   std::vector<ringu::RegisteredBuffer> bufs;
   for (std::int32_t i = 0; i < 4; ++i) {
     bufs.push_back(borrow_or_fail(pool));
