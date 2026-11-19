@@ -205,8 +205,9 @@ void copy_sqe(io_uring_sqe& dst, const Sqe& src) {
     break;
   case IoOp::Pipe:
     // pipe_flags shares its union slot with rw_flags; using rw_flags keeps the
-    // library compiling against older <linux/io_uring.h> that predate pipe_flags
-    dst.rw_flags = src.op_flags;
+    // library compiling against older <linux/io_uring.h> that predate pipe_flags.
+    // rw_flags is __kernel_rwf_t (signed) on recent headers, hence the explicit cast.
+    dst.rw_flags = static_cast<decltype(dst.rw_flags)>(src.op_flags);
     break;
   case IoOp::Send:
   case IoOp::Recv:
