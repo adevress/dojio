@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
-#include <dojio/box_ptr.hpp>
+#include <dojio/dojio_memory.hpp>
 
 namespace {
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bit>
 #include <cstddef>
 #include <memory>
 #include <memory_resource>
@@ -7,6 +8,22 @@
 #include <utility>
 
 namespace dojio {
+
+namespace detail {
+
+/// Reinterprets the object representation of from as To, without reinterpret_cast.
+///
+/// Both types must be trivially copyable and of the same size. This is how the library
+/// views io_uring ABI data (kernel `__u64` address fields, the mmap'd ring pages)
+/// through a different type.
+template <typename To, typename From> [[nodiscard]] constexpr To uring_cast(From from) noexcept {
+  static_assert(std::is_trivially_copyable_v<From>, "uring_cast requires a trivially copyable source");
+  static_assert(std::is_trivially_copyable_v<To>, "uring_cast requires a trivially copyable target");
+  static_assert(sizeof(To) == sizeof(From), "uring_cast requires same-size types");
+  return std::bit_cast<To>(from);
+}
+
+} // namespace detail
 
 /// A move-only owning pointer that allocates its object through a
 /// std::pmr::polymorphic_allocator.

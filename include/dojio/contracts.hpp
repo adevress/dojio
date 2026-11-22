@@ -34,7 +34,9 @@ namespace intern {
   // but satisfy the consteval system of clang
   if (std::is_constant_evaluated()) {
     while (true) {
-      (void)1;
+      // cppcheck-suppress misra-cpp-2023-9.2.1 ; MISRA C++ deviation: void cast keeps the consteval loop non-empty for
+      // clang
+      static_cast<void>(1);
     }
   } else {
     std::abort();

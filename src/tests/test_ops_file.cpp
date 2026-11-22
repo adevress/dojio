@@ -110,14 +110,13 @@ TEST_CASE("open, write, pwrite, pread, read, fstat, close on a file") {
     engine->process(Mode::Batch);
     CHECK(read_out == "o woWX");
 
-    // fstat: the buffer (>= sizeof(statx)) receives a struct stat on success
+    // fstat: the result is the struct stat built from the kernel-filled statx buffer
     engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::Result<struct stat> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
-                     const auto* st = reinterpret_cast<const struct stat*>(r->data());
-                     CHECK(st->st_size == 18);
-                     CHECK(S_ISREG(st->st_mode));
+                     CHECK(r->st_size == 18);
+                     CHECK(S_ISREG(r->st_mode));
                    });
     engine->process(Mode::Batch);
 
@@ -262,11 +261,10 @@ TEST_CASE("ftruncate shrinks and grows a file") {
 
     // the file is now exactly 4 bytes long
     engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::Result<struct stat> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
-                     const auto* st = reinterpret_cast<const struct stat*>(r->data());
-                     CHECK(st->st_size == 4);
+                     CHECK(r->st_size == 4);
                    });
     engine->process(Mode::Batch);
 
@@ -288,11 +286,10 @@ TEST_CASE("ftruncate shrinks and grows a file") {
     });
     engine->process(Mode::Batch);
     engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::Result<struct stat> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
-                     const auto* st = reinterpret_cast<const struct stat*>(r->data());
-                     CHECK(st->st_size == 12);
+                     CHECK(r->st_size == 12);
                    });
     engine->process(Mode::Batch);
     std::string grown;

@@ -126,11 +126,10 @@ TEST_CASE("DOJIO_FORCE_LINUX_OLD_KERNEL runs ftruncate and pipe through the sync
     });
     engine->process(Mode::Batch);
     engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::Result<struct stat> r, dojio::OperationId, std::int32_t res) {
                      REQUIRE(r.has_value());
                      CHECK(res == 0);
-                     const auto* st = reinterpret_cast<const struct stat*>(r->data());
-                     CHECK(st->st_size == 4);
+                     CHECK(r->st_size == 4);
                    });
     engine->process(Mode::Batch);
 

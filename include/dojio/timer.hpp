@@ -15,11 +15,11 @@ public:
   constexpr Timer() = default;
 
   template <typename Rep, typename Period>
-  constexpr Timer(std::chrono::duration<Rep, Period> duration)
+  constexpr explicit Timer(std::chrono::duration<Rep, Period> duration)
       : duration_(std::chrono::duration_cast<Duration>(duration)) {}
 
   /// Requested timeout.
-  [[nodiscard]] constexpr Duration duration() const { return duration_; }
+  [[nodiscard]] constexpr Duration duration() const noexcept { return duration_; }
 
 private:
   Duration duration_{};

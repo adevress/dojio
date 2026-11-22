@@ -8,6 +8,7 @@
 #include <variant>
 
 #include <dojio/contracts.hpp>
+#include <dojio/dojio_memory.hpp>
 #include <dojio/fd.hpp>
 #include <dojio/memory_pool.hpp>
 #include <dojio/operation_id.hpp>
@@ -15,9 +16,16 @@
 #include <dojio/result.hpp>
 #include <dojio/sqe.hpp>
 
+// FstatOp completes with a struct stat. It is forward declared here so the public header stays
+// free of the POSIX <sys/stat.h> include; a caller that submits an fstat must include it.
+struct stat;
+
 namespace dojio {
 
 namespace detail {
+
+/// Empty path handed to IORING_OP_STATX together with k_at_empty_path.
+inline constexpr char k_empty_path[] = "";
 
 // Implemented in the library: they require POSIX / Linux headers, which are kept
 // out of the public headers.
@@ -30,8 +38,8 @@ std::int32_t bind_fd(std::int32_t fd, const void* addr, std::uint32_t addr_len);
 std::int32_t ftruncate_fd(std::int32_t fd, std::uint64_t length);
 /// pipe2(2) wrapper writing the two descriptors into fds; raw result code (negated errno on failure).
 std::int32_t pipe_fd(std::int32_t* fds, std::int32_t flags);
-/// Rewrites the first sizeof(struct stat) bytes of a statx-filled buffer as a struct stat.
-void statx_to_stat(std::byte* data, std::uint64_t size);
+/// Reads the kernel-filled statx buffer and returns the equivalent struct stat.
+[[nodiscard]] struct stat statx_to_stat(const void* data, std::uint64_t size);
 
 /// A parsed Linux kernel version (major.minor.patch), as reported by uname(2).
 struct OsVersion {
@@ -74,6 +82,9 @@ template <typename Buffer> struct result_value<AcceptOp, Buffer> {
 };
 template <typename Buffer> struct result_value<OpenAtOp, Buffer> {
   using type = FileDescriptor;
+};
+template <typename Buffer> struct result_value<FstatOp, Buffer> {
+  using type = struct stat;
 };
 template <typename Buffer> struct result_value<FsyncOp, Buffer> {
   using type = std::int32_t;
@@ -166,7 +177,7 @@ public:
     } else if constexpr (std::is_same_v<Op, FtruncateOp>) {
       return detail::ftruncate_fd(op_.fd.value(), op_.length);
     } else if constexpr (std::is_same_v<Op, PipeOp>) {
-      return detail::pipe_fd(reinterpret_cast<std::int32_t*>(buffer_.data()), op_.flags);
+      return detail::pipe_fd(detail::uring_cast<std::int32_t*>(buffer_.data()), op_.flags);
     } else {
       // only listen, bind, ftruncate and pipe can be dispatched inline; anything
       // else reaching here is a bug
@@ -186,9 +197,10 @@ public:
       return;
     }
     if constexpr (std::is_same_v<Op, FstatOp>) {
-      detail::statx_to_stat(reinterpret_cast<std::byte*>(buffer_.data()), buffer_bytes());
+      invoke(Result<Value>(detail::statx_to_stat(buffer_.data(), buffer_bytes())), res);
+    } else {
+      invoke(Result<Value>(make_value(res)), res);
     }
-    invoke(Result<Value>(make_value(res)), res);
   }
 
 private:
@@ -197,7 +209,7 @@ private:
   }
 
   void set_buffer(Sqe& sqe, bool fixed) {
-    sqe.addr = reinterpret_cast<std::uint64_t>(buffer_.data());
+    sqe.addr = detail::uring_cast<std::uintptr_t>(buffer_.data());
     sqe.len = static_cast<std::uint32_t>(buffer_bytes());
     if constexpr (std::is_same_v<Buffer, RegisteredBuffer>) {
       if (fixed) {
@@ -210,7 +222,7 @@ private:
     if constexpr (std::is_same_v<Op, OpenAtOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::OpenAt);
       sqe.fd = op_.dirfd.value();
-      sqe.addr = reinterpret_cast<std::uint64_t>(op_.path.c_str());
+      sqe.addr = detail::uring_cast<std::uintptr_t>(op_.path.c_str());
       sqe.op_flags = static_cast<std::uint32_t>(op_.flags);
       sqe.len = op_.mode;
     } else if constexpr (std::is_same_v<Op, ReadOp> || std::is_same_v<Op, PreadOp>) {
@@ -240,11 +252,10 @@ private:
       }
       set_buffer(sqe, std::is_same_v<Buffer, RegisteredBuffer>);
     } else if constexpr (std::is_same_v<Op, FstatOp>) {
-      static const char k_empty_path[] = "";
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Statx);
       sqe.fd = op_.fd.value();
-      sqe.addr = reinterpret_cast<std::uint64_t>(k_empty_path);
-      sqe.addr2 = reinterpret_cast<std::uint64_t>(buffer_.data());
+      sqe.addr = detail::uring_cast<std::uintptr_t>(detail::k_empty_path);
+      sqe.addr2 = detail::uring_cast<std::uintptr_t>(buffer_.data());
       sqe.len = k_statx_basic_stats;
       sqe.op_flags = k_at_empty_path;
     } else if constexpr (std::is_same_v<Op, FsyncOp>) {
@@ -254,7 +265,7 @@ private:
     } else if constexpr (std::is_same_v<Op, ConnectOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Connect);
       sqe.fd = op_.fd.value();
-      sqe.addr = reinterpret_cast<std::uint64_t>(op_.addr.data());
+      sqe.addr = detail::uring_cast<std::uintptr_t>(op_.addr.data());
       sqe.addr2 = k_sockaddr_in_size;
     } else if constexpr (std::is_same_v<Op, CloseOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Close);
@@ -267,8 +278,8 @@ private:
         // the kernel takes the address buffer capacity from *addr_len (addr2) and
         // leaves the length field at 0
         op_.addr_len = static_cast<std::uint32_t>(buffer_bytes());
-        sqe.addr = reinterpret_cast<std::uint64_t>(buffer_.data());
-        sqe.addr2 = reinterpret_cast<std::uint64_t>(&op_.addr_len);
+        sqe.addr = detail::uring_cast<std::uintptr_t>(buffer_.data());
+        sqe.addr2 = detail::uring_cast<std::uintptr_t>(&op_.addr_len);
       }
     } else if constexpr (std::is_same_v<Op, SendOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Send);
@@ -282,7 +293,7 @@ private:
       set_buffer(sqe, false);
     } else if constexpr (std::is_same_v<Op, TimeoutOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Timeout);
-      sqe.addr = reinterpret_cast<std::uint64_t>(&op_.ts);
+      sqe.addr = detail::uring_cast<std::uintptr_t>(&op_.ts);
       sqe.len = 1;
       sqe.op_flags = 0;
     } else if constexpr (std::is_same_v<Op, FtruncateOp>) {
@@ -296,13 +307,13 @@ private:
     } else if constexpr (std::is_same_v<Op, BindOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Bind);
       sqe.fd = op_.fd.value();
-      sqe.addr = reinterpret_cast<std::uint64_t>(op_.addr.data());
+      sqe.addr = detail::uring_cast<std::uintptr_t>(op_.addr.data());
       sqe.addr2 = op_.addr_len;
     } else if constexpr (std::is_same_v<Op, PipeOp>) {
       // IORING_OP_PIPE writes the two descriptors into *addr (fd must be 0)
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Pipe);
       sqe.fd = 0;
-      sqe.addr = reinterpret_cast<std::uint64_t>(buffer_.data());
+      sqe.addr = detail::uring_cast<std::uintptr_t>(buffer_.data());
       sqe.len = 0;
       sqe.op_flags = static_cast<std::uint32_t>(op_.flags);
     }

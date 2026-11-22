@@ -13,8 +13,8 @@
 #include <tl/expected.hpp>
 
 #include <dojio/action.hpp>
-#include <dojio/box_ptr.hpp>
 #include <dojio/contracts.hpp>
+#include <dojio/dojio_memory.hpp>
 #include <dojio/error.hpp>
 #include <dojio/operation_id.hpp>
 #include <dojio/operations.hpp>
@@ -62,13 +62,13 @@ struct RingEngineOptions {
 class RingEngine {
 public:
   /// Selects how process() behaves.
-  enum class ProcessMode {
+  enum class ProcessMode : std::uint8_t {
     Batch,  ///< submit and process the current batch of operations, then return
     Forever ///< loop processing operations until request_stop() is called (interruption)
   };
 
   /// Selects which operations count_operations reports.
-  enum class OperationState {
+  enum class OperationState : std::uint8_t {
     Pending,   ///< waiting in the pool (submitted but not completed yet)
     Completed, ///< successfully processed
     Failed     ///< failed (an I/O error code, or a cancellation)
@@ -98,7 +98,7 @@ public:
     static_assert(BufferLike<Buffer>, "Buffer must be a std::vector, std::array or RegisteredBuffer");
     static_assert(uses_buffer_v<Op>, "this operation does not take a buffer; use submit(op, callback)");
     if constexpr (std::is_same_v<Op, FstatOp>) {
-      enforce_precondition(buffer.size() * sizeof(typename Buffer::value_type) >= k_statx_size);
+      enforce_precondition((buffer.size() * sizeof(typename Buffer::value_type)) >= k_statx_size);
     }
     return do_submit(std::move(op), std::move(buffer), std::move(callback), false);
   }

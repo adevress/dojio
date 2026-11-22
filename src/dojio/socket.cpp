@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
+#include <bit>
 #include <cerrno>
 #include <cstring>
 #include <string>
@@ -16,6 +17,11 @@
 // public headers.
 
 namespace dojio {
+
+// The buffers handed to the kernel as a sockaddr must be aligned for the address types.
+static_assert(alignof(StaticBuffer<k_sockaddr_storage_size>) >= alignof(sockaddr_in));
+static_assert(alignof(StaticBuffer<k_sockaddr_storage_size>) >= alignof(sockaddr_in6));
+static_assert(alignof(StaticBuffer<k_sockaddr_in_size>) >= alignof(sockaddr_in));
 
 namespace {
 
@@ -111,6 +117,8 @@ BindOp bind(FileDescriptor fd, Ipv4Endpoint endpoint) {
   sa.sin_addr.s_addr = htonl(endpoint.address);
   sa.sin_port = htons(endpoint.port);
   static_assert(sizeof(sa) <= k_sockaddr_storage_size);
+  // cppcheck-suppress misra-cpp-2023-24.5.2 ; MISRA C++ deviation: memcpy copies a trivially-copyable sockaddr into the
+  // aligned buffer
   std::memcpy(op.addr.data(), &sa, sizeof(sa));
   op.addr_len = static_cast<std::uint32_t>(sizeof(sa));
   return op;
@@ -122,9 +130,11 @@ BindOp bind(FileDescriptor fd, Ipv6Endpoint endpoint) {
   op.endpoint = endpoint;
   sockaddr_in6 sa{};
   sa.sin6_family = AF_INET6;
-  std::memcpy(&sa.sin6_addr, endpoint.address.data(), sizeof(sa.sin6_addr));
+  sa.sin6_addr = std::bit_cast<decltype(sa.sin6_addr)>(endpoint.address);
   sa.sin6_port = htons(endpoint.port);
   static_assert(sizeof(sa) <= k_sockaddr_storage_size);
+  // cppcheck-suppress misra-cpp-2023-24.5.2 ; MISRA C++ deviation: memcpy copies a trivially-copyable sockaddr into the
+  // aligned buffer
   std::memcpy(op.addr.data(), &sa, sizeof(sa));
   op.addr_len = static_cast<std::uint32_t>(sizeof(sa));
   return op;
@@ -139,6 +149,8 @@ ConnectOp connect(FileDescriptor fd, Ipv4Endpoint endpoint) {
   sa.sin_addr.s_addr = htonl(endpoint.address);
   sa.sin_port = htons(endpoint.port);
   static_assert(sizeof(sa) <= k_sockaddr_in_size);
+  // cppcheck-suppress misra-cpp-2023-24.5.2 ; MISRA C++ deviation: memcpy copies a trivially-copyable sockaddr into the
+  // aligned buffer
   std::memcpy(op.addr.data(), &sa, sizeof(sa));
   return op;
 }

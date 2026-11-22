@@ -1,5 +1,6 @@
 #include <dojio/action.hpp>
 
+#include <array>
 #include <charconv>
 #include <string_view>
 
@@ -20,7 +21,7 @@ namespace {
 /// C string and std::from_chars reads the numeric fields.
 OsVersion parse_os_release(std::string_view release) {
   OsVersion version{};
-  std::int32_t* fields[3] = {&version.major, &version.minor, &version.patch};
+  std::array<std::int32_t*, 3> fields{&version.major, &version.minor, &version.patch};
   std::size_t field = 0;
   while (field < 3 && !release.empty()) {
     const std::size_t digit_count = release.find_first_not_of("0123456789");
@@ -60,6 +61,7 @@ OsVersion read_os_version() {
 
 const OsVersion& extract_os_version() {
   // function-local static: initialized once, thread-safe since C++11
+  // cppcheck-suppress misra-cpp-2023-6.7.1 ; MISRA C++ deviation DEV-008: immutable, thread-safe OS-version cache
   static const OsVersion version = read_os_version();
   return version;
 }

@@ -24,6 +24,7 @@
 #include <fmt/format.h>
 #include <random>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <dojio/dojio.hpp>
@@ -78,24 +79,24 @@ std::chrono::nanoseconds run_serial(const std::filesystem::path& directory,
   const auto start = std::chrono::steady_clock::now();
   for (std::int32_t i = 0; i < k_file_count; ++i) {
     const std::string path = (directory / file_name(i)).string();
-    const std::int32_t fd = static_cast<std::int32_t>(
-        ::open(path.c_str(), static_cast<int>(O_WRONLY | O_CREAT | O_TRUNC), static_cast<mode_t>(0644)));
+    const std::int32_t fd =
+        static_cast<std::int32_t>(::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, static_cast<mode_t>(0644)));
     if (fd < 0) {
-      fmt::print(stderr, "serial: open {}: {}\n", path, std::strerror(errno));
+      fmt::print(stderr, "serial: open {}: {}\n", path, std::error_code(errno, std::system_category()).message());
       std::exit(1);
     }
     if (!write_all(fd, buffers[static_cast<std::size_t>(i)])) {
-      fmt::print(stderr, "serial: write {}: {}\n", path, std::strerror(errno));
+      fmt::print(stderr, "serial: write {}: {}\n", path, std::error_code(errno, std::system_category()).message());
       ::close(fd);
       std::exit(1);
     }
     if (::fsync(fd) != 0) {
-      fmt::print(stderr, "serial: fsync {}: {}\n", path, std::strerror(errno));
+      fmt::print(stderr, "serial: fsync {}: {}\n", path, std::error_code(errno, std::system_category()).message());
       ::close(fd);
       std::exit(1);
     }
     if (::close(fd) != 0) {
-      fmt::print(stderr, "serial: close {}: {}\n", path, std::strerror(errno));
+      fmt::print(stderr, "serial: close {}: {}\n", path, std::error_code(errno, std::system_category()).message());
       std::exit(1);
     }
   }

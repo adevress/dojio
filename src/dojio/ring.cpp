@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstring>
+#include <system_error>
 
 namespace dojio::detail {
 
@@ -73,10 +74,10 @@ tl::expected<void, DojioError> IoUring::setup(std::uint32_t entries, std::uint32
   fd_ = static_cast<std::int32_t>(sys_io_uring_setup(entries, &params_));
   if (fd_ < 0) {
     // errno is only valid right after the failing syscall: capture it before formatting
-    const int err = errno;
+    const std::int32_t err = static_cast<std::int32_t>(errno);
     return tl::unexpected(
-        DojioError{ErrorOpcode::IoUringSetup,
-                   fmt::format("dojio: io_uring_setup(entries={}) failed: {}", entries, std::strerror(err))});
+        DojioError{ErrorOpcode::IoUringSetup, fmt::format("dojio: io_uring_setup(entries={}) failed: {}", entries,
+                                                          std::error_code(err, std::generic_category()).message())});
   }
   sq_mask_ = params_.sq_entries - 1;
   cq_mask_ = params_.cq_entries - 1;
@@ -89,49 +90,57 @@ tl::expected<void, DojioError> IoUring::setup(std::uint32_t entries, std::uint32
   sqes_ = static_cast<io_uring_sqe*>(
       map_ring(fd_, static_cast<std::uint64_t>(params_.sq_entries) * sizeof(io_uring_sqe), IORING_OFF_SQES));
   if (sq_ring_ == nullptr || cq_ring_ == nullptr || sqes_ == nullptr) {
-    const int err = errno;
+    const std::int32_t err = static_cast<std::int32_t>(errno);
     return tl::unexpected(
-        DojioError{ErrorOpcode::IoUringMmap, fmt::format("dojio: io_uring ring mmap failed: {}", std::strerror(err))});
+        DojioError{ErrorOpcode::IoUringMmap, fmt::format("dojio: io_uring ring mmap failed: {}",
+                                                         std::error_code(err, std::generic_category()).message())});
   }
   auto* sq_base = static_cast<std::uint8_t*>(sq_ring_);
   auto* cq_base = static_cast<std::uint8_t*>(cq_ring_);
-  sq_head_ = reinterpret_cast<std::uint32_t*>(sq_base + params_.sq_off.head);
-  sq_tail_ = reinterpret_cast<std::uint32_t*>(sq_base + params_.sq_off.tail);
-  sq_array_ = reinterpret_cast<std::uint32_t*>(sq_base + params_.sq_off.array);
-  sq_flags_ = reinterpret_cast<std::uint32_t*>(sq_base + params_.sq_off.flags);
-  cq_head_ = reinterpret_cast<std::uint32_t*>(cq_base + params_.cq_off.head);
-  cq_tail_ = reinterpret_cast<std::uint32_t*>(cq_base + params_.cq_off.tail);
-  cqes_ = reinterpret_cast<io_uring_cqe*>(cq_base + params_.cq_off.cqes);
+  sq_head_ = uring_cast<std::uint32_t*>(sq_base + params_.sq_off.head);
+  sq_tail_ = uring_cast<std::uint32_t*>(sq_base + params_.sq_off.tail);
+  sq_array_ = uring_cast<std::uint32_t*>(sq_base + params_.sq_off.array);
+  sq_flags_ = uring_cast<std::uint32_t*>(sq_base + params_.sq_off.flags);
+  cq_head_ = uring_cast<std::uint32_t*>(cq_base + params_.cq_off.head);
+  cq_tail_ = uring_cast<std::uint32_t*>(cq_base + params_.cq_off.tail);
+  cqes_ = uring_cast<io_uring_cqe*>(cq_base + params_.cq_off.cqes);
   return {};
 }
 
 IoUring::~IoUring() {
   if (fd_ >= 0 && sqpoll()) {
     // nudge the SQPOLL kernel thread so it observes the ring shutdown promptly
-    (void)sys_io_uring_enter(fd_, 0, 0, IORING_ENTER_SQ_WAKEUP);
+    const std::int32_t ret = static_cast<std::int32_t>(sys_io_uring_enter(fd_, 0, 0, IORING_ENTER_SQ_WAKEUP));
+    enforce_precondition(ret >= 0);
   }
   if (sqes_ != nullptr) {
-    ::munmap(sqes_, static_cast<std::size_t>(static_cast<std::uint64_t>(params_.sq_entries) * sizeof(io_uring_sqe)));
+    const std::uint64_t sqes_size = static_cast<std::uint64_t>(params_.sq_entries) * sizeof(io_uring_sqe);
+    const std::int32_t rc = ::munmap(sqes_, static_cast<std::size_t>(sqes_size));
+    enforce_invariant(rc == 0);
   }
   if (sq_ring_ != nullptr) {
-    ::munmap(sq_ring_, sq_ring_size_);
+    const std::int32_t rc = ::munmap(sq_ring_, sq_ring_size_);
+    enforce_invariant(rc == 0);
   }
   if (cq_ring_ != nullptr) {
-    ::munmap(cq_ring_, cq_ring_size_);
+    const std::int32_t rc = ::munmap(cq_ring_, cq_ring_size_);
+    enforce_invariant(rc == 0);
   }
   if (fd_ >= 0) {
-    ::close(fd_);
+    const std::int32_t rc = ::close(fd_);
+    enforce_invariant(rc == 0);
   }
 }
 
 io_uring_sqe* IoUring::reserve_sqe() {
   const std::uint32_t head = std::atomic_ref<std::uint32_t>(*sq_head_).load(std::memory_order_acquire);
-  if (sq_tail_shadow_ - head >= params_.sq_entries) {
+  if ((sq_tail_shadow_ - head) >= params_.sq_entries) {
     return nullptr;
   }
   const std::uint32_t tail = sq_tail_shadow_;
   sq_tail_shadow_ = tail + 1;
   io_uring_sqe* sqe = &sqes_[tail & sq_mask_];
+  // cppcheck-suppress misra-cpp-2023-21.2.2 ; MISRA C++ deviation: memset zeroes the kernel SQE (sizeof-bounded)
   std::memset(sqe, 0, sizeof(*sqe));
   sq_array_[tail & sq_mask_] = tail & sq_mask_;
   return sqe;
@@ -174,9 +183,9 @@ void IoUring::cq_advance(std::uint32_t n) {
 }
 
 void copy_sqe(io_uring_sqe& dst, const Sqe& src) {
+  // cppcheck-suppress misra-cpp-2023-21.2.2 ; MISRA C++ deviation: memset zeroes the kernel SQE (sizeof-bounded)
   std::memset(&dst, 0, sizeof(dst));
-  std::memset(&dst, 0, sizeof(dst));
-  dst.opcode = static_cast<__u8>(src.opcode);
+  dst.opcode = static_cast<std::uint8_t>(src.opcode);
   dst.fd = src.fd;
   dst.addr = src.addr;
   dst.len = src.len;

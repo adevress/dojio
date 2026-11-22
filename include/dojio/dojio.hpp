@@ -3,9 +3,9 @@
 /// Umbrella header of the dojio library: a io_uring interface for modern C++.
 
 #include <dojio/action.hpp>
-#include <dojio/box_ptr.hpp>
 #include <dojio/buffer.hpp>
 #include <dojio/contracts.hpp>
+#include <dojio/dojio_memory.hpp>
 #include <dojio/error.hpp>
 #include <dojio/fd.hpp>
 #include <dojio/memory_pool.hpp>

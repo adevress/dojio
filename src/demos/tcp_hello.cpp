@@ -81,8 +81,9 @@ int main(int argc, char** argv) {
     bool listened = false;
     engine->submit(dojio::listen(dojio::FileDescriptor{lfd}, 128),
                    [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
-                     if (r.has_value())
+                     if (r.has_value()) {
                        listened = true;
+                     }
                    });
     engine->process(dojio::RingEngine::ProcessMode::Batch);
     if (!listened) {
@@ -195,8 +196,9 @@ int main(int argc, char** argv) {
       for (std::int32_t tries = 0; tries < 10000 && !connected; ++tries) {
         engine->submit(dojio::connect(dojio::FileDescriptor{fd}, endpoint),
                        [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
-                         if (r.has_value())
+                         if (r.has_value()) {
                            connected = true;
+                         }
                        });
         engine->process(dojio::RingEngine::ProcessMode::Batch);
         if (!connected) {

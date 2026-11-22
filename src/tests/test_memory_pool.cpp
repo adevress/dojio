@@ -182,6 +182,6 @@ TEST_CASE("Pool invariant: destroying the pool with an active buffer terminates"
     ::_exit(0);   // not reached
   }
   std::int32_t status = 0;
-  REQUIRE(::waitpid(static_cast<pid_t>(pid), reinterpret_cast<int*>(&status), 0) == pid);
+  REQUIRE(::waitpid(static_cast<pid_t>(pid), &status, 0) == pid);
   CHECK(WIFSIGNALED(status));
 }

@@ -47,12 +47,7 @@ std::byte* RegisteredBuffer::data() const {
 std::uint64_t RegisteredBuffer::size() const { return 0; }
 
 tl::expected<std::unique_ptr<RegisteredMemoryPool>, DojioError>
-RegisteredMemoryPool::create(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
-                             std::pmr::memory_resource* resource) {
-  (void)ring;
-  (void)buffer_size;
-  (void)count;
-  (void)resource;
+RegisteredMemoryPool::create(detail::IoUring&, std::uint64_t, std::uint64_t, std::pmr::memory_resource*) {
   return tl::unexpected(not_supported_error());
 }
 
@@ -62,6 +57,6 @@ tl::expected<RegisteredBuffer, DojioError> RegisteredMemoryPool::borrow() {
   return tl::unexpected(not_supported_error());
 }
 
-void RegisteredMemoryPool::return_buffer(std::uint64_t index) noexcept { (void)index; }
+void RegisteredMemoryPool::return_buffer(std::uint64_t) noexcept {}
 
 } // namespace dojio

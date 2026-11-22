@@ -52,7 +52,7 @@ public:
   [[nodiscard]] std::uint64_t size() const;
 
   /// Index of the buffer in the io_uring fixed buffer table.
-  [[nodiscard]] std::uint16_t index() const { return static_cast<std::uint16_t>(index_); }
+  [[nodiscard]] std::uint16_t index() const noexcept { return static_cast<std::uint16_t>(index_); }
 
   [[nodiscard]] explicit operator bool() const { return pool_ != nullptr; }
 
@@ -104,17 +104,17 @@ public:
   /// exhausted, instead of throwing.
   [[nodiscard]] tl::expected<RegisteredBuffer, DojioError> borrow();
 
-  [[nodiscard]] std::uint64_t buffer_size() const { return buffer_size_; }
-  [[nodiscard]] std::uint64_t capacity() const { return count_; }
+  [[nodiscard]] std::uint64_t buffer_size() const noexcept { return buffer_size_; }
+  [[nodiscard]] std::uint64_t capacity() const noexcept { return count_; }
 
   /// Number of buffers currently borrowed (the invariant counter).
-  [[nodiscard]] std::uint64_t active_count() const { return active_count_; }
+  [[nodiscard]] std::uint64_t active_count() const noexcept { return active_count_; }
 
   /// Number of buffers available for borrowing.
-  [[nodiscard]] std::uint64_t available() const { return count_ - active_count_; }
+  [[nodiscard]] std::uint64_t available() const noexcept { return count_ - active_count_; }
 
   /// Base address of the whole registered memory region (page aligned).
-  [[nodiscard]] std::byte* base() const { return memory_; }
+  [[nodiscard]] std::byte* base() const noexcept { return memory_; }
 
 private:
   friend class RegisteredBuffer;

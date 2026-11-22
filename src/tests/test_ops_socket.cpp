@@ -33,8 +33,8 @@ TEST_CASE("send/recv over a socketpair") {
     auto engine = std::move(ring_engine_result).value();
     CHECK(engine->sqpoll_enabled() == sqpoll);
     using Mode = dojio::RingEngine::ProcessMode;
-    std::int32_t sv[2];
-    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, reinterpret_cast<int*>(sv)) == 0);
+    std::int32_t sv[2]{};
+    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
 
     std::string received;
     std::int32_t sent = -1;
@@ -153,8 +153,8 @@ TEST_CASE("listen on a non-socket fd fails with ENOTSOCK") {
     auto engine = std::move(ring_engine_result).value();
     CHECK(engine->sqpoll_enabled() == sqpoll);
     using State = dojio::RingEngine::OperationState;
-    std::int32_t fds[2];
-    REQUIRE(::pipe(reinterpret_cast<int*>(fds)) == 0);
+    std::int32_t fds[2]{};
+    REQUIRE(::pipe(fds) == 0);
     bool called = false;
     engine->submit(dojio::listen(dojio::FileDescriptor{fds[0]}, 4),
                    [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {

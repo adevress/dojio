@@ -22,8 +22,7 @@ DojioError not_supported_error(std::string_view what) {
 
 } // namespace
 
-tl::expected<std::unique_ptr<RingEngine>, DojioError> RingEngine::create(RingEngineOptions options) {
-  (void)options;
+tl::expected<std::unique_ptr<RingEngine>, DojioError> RingEngine::create(RingEngineOptions) {
   return tl::unexpected(not_supported_error("RingEngine"));
 }
 
@@ -31,36 +30,36 @@ RingEngine::RingEngine(std::unique_ptr<detail::IoUring> ring) : ring_(std::move(
 
 RingEngine::~RingEngine() = default;
 
-bool RingEngine::cancel(OperationId id) {
-  (void)id;
+bool RingEngine::cancel(OperationId) {
   unreachable();
-  return false; // never reached: unreachable() is [[noreturn]]
+  // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
+  return false;
 }
 
-void RingEngine::process(ProcessMode mode) {
-  (void)mode;
-  unreachable();
-}
+void RingEngine::process(ProcessMode) { unreachable(); }
 
-std::uint64_t RingEngine::count_operations(OperationState state) const {
-  (void)state;
+std::uint64_t RingEngine::count_operations(OperationState) const {
   unreachable();
-  return 0; // never reached: unreachable() is [[noreturn]]
+  // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
+  return 0;
 }
 
 std::int32_t RingEngine::ring_fd() const {
   unreachable();
-  return -1; // never reached: unreachable() is [[noreturn]]
+  // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
+  return -1;
 }
 
 bool RingEngine::sqpoll_enabled() const {
   unreachable();
-  return false; // never reached: unreachable() is [[noreturn]]
+  // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
+  return false;
 }
 
 std::chrono::milliseconds RingEngine::sqpoll_poll_time() const {
   unreachable();
-  return std::chrono::milliseconds{0}; // never reached: unreachable() is [[noreturn]]
+  // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
+  return std::chrono::milliseconds{0};
 }
 
 } // namespace dojio

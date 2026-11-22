@@ -9,9 +9,9 @@
 #include <unistd.h>
 
 #include <cerrno>
-#include <cstring>
 #include <limits>
 #include <new>
+#include <system_error>
 #include <vector>
 
 namespace dojio {
@@ -20,7 +20,7 @@ namespace {
 
 // sysconf(3) returns long (C API boundary); narrowed with an explicit cast.
 std::uint64_t query_page_size() {
-  const long v = ::sysconf(_SC_PAGESIZE);
+  const auto v = ::sysconf(_SC_PAGESIZE);
   return v > 0 ? static_cast<std::uint64_t>(v) : std::uint64_t{4096};
 }
 
@@ -79,9 +79,9 @@ RegisteredMemoryPool::RegisteredMemoryPool(detail::IoUring& ring, std::uint64_t 
   // every chunk starts on a cache-line boundary: round the stride up to the cache line size
   const std::uint64_t cache_line = cache_line_size();
   chunk_size_ = (buffer_size_ + cache_line - 1) / cache_line * cache_line;
-  enforce_precondition(count_ <= std::numeric_limits<std::uint64_t>::max() / chunk_size_);
+  enforce_precondition(count_ <= (std::numeric_limits<std::uint64_t>::max() / chunk_size_));
   const std::uint64_t total = chunk_size_ * count_;
-  enforce_precondition(total <= std::numeric_limits<std::uint64_t>::max() - page_size_ + 1);
+  enforce_precondition(total <= (std::numeric_limits<std::uint64_t>::max() - page_size_ + 1));
   // the backing memory is allocated as whole pages and distributed in chunks
   const std::uint64_t pages = (total + page_size_ - 1) / page_size_;
   mapped_size_ = pages * page_size_;
@@ -93,10 +93,10 @@ tl::expected<void, DojioError> RegisteredMemoryPool::setup() {
                    -1, 0);
   if (p == MAP_FAILED) {
     // errno is only valid right after the failing syscall: capture it before formatting
-    const int err = errno;
-    return tl::unexpected(
-        DojioError{ErrorOpcode::MemoryPoolMmap, fmt::format("dojio: RegisteredMemoryPool mmap(size={}) failed: {}",
-                                                            mapped_size_, std::strerror(err))});
+    const std::int32_t err = static_cast<std::int32_t>(errno);
+    return tl::unexpected(DojioError{ErrorOpcode::MemoryPoolMmap,
+                                     fmt::format("dojio: RegisteredMemoryPool mmap(size={}) failed: {}", mapped_size_,
+                                                 std::error_code(err, std::generic_category()).message())});
   }
   memory_ = static_cast<std::byte*>(p);
   // register every chunk with the ring as a fixed buffer
@@ -108,11 +108,12 @@ tl::expected<void, DojioError> RegisteredMemoryPool::setup() {
   // register_buffers returns the raw syscall result: the negated errno on failure
   const std::int32_t ret = detail::register_buffers(ring_.fd(), iovecs.data(), static_cast<std::uint32_t>(count_));
   if (ret != 0) {
-    ::munmap(memory_, static_cast<std::size_t>(mapped_size_));
+    const std::int32_t rc = ::munmap(memory_, static_cast<std::size_t>(mapped_size_));
+    enforce_invariant(rc == 0);
     memory_ = nullptr;
     return tl::unexpected(DojioError{ErrorOpcode::MemoryPoolRegisterBuffers,
                                      fmt::format("dojio: io_uring_register(IORING_REGISTER_BUFFERS, nr={}) failed: {}",
-                                                 count_, std::strerror(-ret))});
+                                                 count_, std::error_code(-ret, std::generic_category()).message())});
   }
   return {};
 }
@@ -122,10 +123,12 @@ RegisteredMemoryPool::~RegisteredMemoryPool() {
   // (The destructor is noexcept, so the std::logic_error raised on violation turns
   // into std::terminate.)
   enforce_invariant(active_count_ == 0);
-  detail::unregister_buffers(ring_.fd());
+  const std::int32_t unregister_rc = detail::unregister_buffers(ring_.fd());
+  enforce_invariant(unregister_rc == 0);
   if (memory_ != nullptr) {
     // munmap takes a size_t length (C API boundary)
-    ::munmap(memory_, static_cast<std::size_t>(mapped_size_));
+    const std::int32_t rc = ::munmap(memory_, static_cast<std::size_t>(mapped_size_));
+    enforce_invariant(rc == 0);
   }
 }
 

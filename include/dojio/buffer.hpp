@@ -33,7 +33,9 @@ public:
   [[nodiscard]] std::span<const std::byte> span() const noexcept { return std::span<const std::byte>{storage_}; }
 
 private:
-  std::array<std::byte, static_cast<std::size_t>(N)> storage_{};
+  // Aligned so that a buffer holding a sockaddr_in / sockaddr_in6 (or any object) can be
+  // reinterpreted safely; a plain std::byte array only guarantees alignment 1.
+  alignas(std::max_align_t) std::array<std::byte, static_cast<std::size_t>(N)> storage_{};
 };
 
 /// Static buffer holding a sockaddr_storage, for the peer address of Accept.

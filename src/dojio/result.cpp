@@ -1,15 +1,14 @@
 #include <dojio/result.hpp>
 
-#include <fmt/format.h>
-
 #include <cerrno>
-#include <cstring>
+#include <system_error>
 
 namespace dojio {
 
 std::string IoError::message() const {
-  // strerror(3) is the C API for the message; fmt does the string formatting
-  return fmt::format("{}", std::strerror(-value));
+  // std::error_code gives the same textual description as strerror(3), without
+  // relying on a shared static buffer
+  return std::error_code(-value, std::generic_category()).message();
 }
 
 } // namespace dojio

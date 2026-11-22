@@ -66,6 +66,7 @@ bool RingEngine::cancel(OperationId id) {
   }
   // after a flush the submission queue always has room: a nullptr here is a bug
   enforce_invariant(sqe != nullptr);
+  // cppcheck-suppress misra-cpp-2023-21.2.2 ; MISRA C++ deviation: memset zeroes the kernel SQE (sizeof-bounded)
   std::memset(sqe, 0, sizeof(*sqe));
   sqe->opcode = IORING_OP_ASYNC_CANCEL;
   sqe->addr = id.value;
@@ -98,8 +99,8 @@ void RingEngine::wake_sqpoll_if_needed() {
 
 void RingEngine::flush(std::uint32_t min_complete) {
   // copy every queued SQE mirror into a reserved kernel SQE slot
-  for (auto& [id, action] : pending_) {
-    (void)id;
+  for (auto& entry : pending_) {
+    auto& action = entry.second;
     if (!action->is_inline() && !action->sqe_submitted()) {
       io_uring_sqe* ksqe = ring_->reserve_sqe();
       if (ksqe == nullptr) {

@@ -20,6 +20,7 @@
 #include <numeric>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <dojio/dojio.hpp>
@@ -34,7 +35,7 @@ std::int32_t make_udp_socket(dojio::RingEngine& engine, sockaddr_in& bound_addr)
   }
   const std::int32_t fd = sock->value();
   if (fd < 0) {
-    std::perror("socket");
+    fmt::print(stderr, "socket: {}\n", std::error_code(errno, std::system_category()).message());
     std::exit(1);
   }
   // bind through the RingEngine (IORING_OP_BIND on a recent kernel, inline bind(2) otherwise) to an
@@ -55,7 +56,7 @@ std::int32_t make_udp_socket(dojio::RingEngine& engine, sockaddr_in& bound_addr)
   sockaddr_in addr{};
   socklen_t len = sizeof(addr);
   if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
-    std::perror("getsockname");
+    fmt::print(stderr, "getsockname: {}\n", std::error_code(errno, std::system_category()).message());
     std::exit(1);
   }
   bound_addr = addr;
@@ -83,7 +84,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   // connect both sockets so the Send/Recv operations can be used
   if (::connect(a, reinterpret_cast<const sockaddr*>(&addr_b), sizeof(addr_b)) != 0 ||
       ::connect(b, reinterpret_cast<const sockaddr*>(&addr_a), sizeof(addr_a)) != 0) {
-    std::perror("connect");
+    fmt::print(stderr, "connect: {}\n", std::error_code(errno, std::system_category()).message());
     return 1;
   }
 

@@ -1,5 +1,6 @@
 
 ## Code style instructions
+- Follow `misc/CODE_GUIDELINES.md`
 - Use '//' comment style and '///' for documentations
 - Use `pragma once` instead of include guards
 - Respect the existing namespace hierarchy
