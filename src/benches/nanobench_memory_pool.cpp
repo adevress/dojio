@@ -23,7 +23,7 @@ int main() {
     if (!pool_result.has_value()) {
       throw std::runtime_error(pool_result.error().message);
     }
-    auto& pool = *pool_result.value();
+    auto& pool = *pool_result;
     ankerl::nanobench::doNotOptimizeAway(pool.capacity());
   });
 
@@ -32,7 +32,7 @@ int main() {
     if (!pool_result.has_value()) {
       throw std::runtime_error(pool_result.error().message);
     }
-    auto& pool = *pool_result.value();
+    auto& pool = *pool_result;
     std::vector<dojio::RegisteredBuffer> bufs;
     bufs.reserve(256);
     for (std::int32_t i = 0; i < 256; ++i) {
@@ -46,7 +46,7 @@ int main() {
     if (!pool_result.has_value()) {
       throw std::runtime_error(pool_result.error().message);
     }
-    auto& pool = *pool_result.value();
+    auto& pool = *pool_result;
     for (std::int32_t i = 0; i < 1000; ++i) {
       dojio::RegisteredBuffer buf = pool.borrow().value();
       ankerl::nanobench::doNotOptimizeAway(buf.data());
@@ -59,7 +59,7 @@ int main() {
     if (!pool_result.has_value()) {
       throw std::runtime_error(pool_result.error().message);
     }
-    auto& pool = *pool_result.value();
+    auto& pool = *pool_result;
     for (std::int32_t i = 0; i < 1000; ++i) {
       std::vector<dojio::RegisteredBuffer> bufs;
       bufs.reserve(8);

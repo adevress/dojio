@@ -45,7 +45,7 @@ int main() {
   if (!pool_result.has_value()) {
     throw std::runtime_error(pool_result.error().message);
   }
-  auto& pool = *pool_result.value();
+  auto& pool = *pool_result;
 
   ankerl::nanobench::Bench bench;
   bench.title("dojio ring engine").unit("op").warmup(2);

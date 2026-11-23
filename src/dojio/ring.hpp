@@ -1,14 +1,14 @@
 #pragma once
 
-// Private header: this is the only place where <linux/io_uring.h> is included.
-// None of these types may leak into include/dojio/.
+// Private header: <linux/io_uring.h> is only included here and in memory_pool.cpp
+// (which registers the pool chunks as fixed buffers). None of these types may leak
+// into include/dojio/.
 
 #include <cstddef>
 #include <cstdint>
 #include <linux/io_uring.h>
 #include <memory>
 #include <memory_resource>
-#include <sys/uio.h>
 
 #include <tl/expected.hpp>
 
@@ -19,6 +19,12 @@ namespace dojio::detail {
 
 /// Copies a dojio Sqe mirror onto a real kernel SQE.
 void copy_sqe(io_uring_sqe& dst, const Sqe& src);
+
+/// Combines flag constants as unsigned values (MISRA Rule 7.0.4) and returns the
+/// result as the int expected by the C API.
+template <typename... Flags> [[nodiscard]] constexpr int combine_flags(Flags... flags) noexcept {
+  return static_cast<int>((static_cast<unsigned int>(flags) | ...));
+}
 
 /// Thin RAII wrapper over the Linux io_uring kernel API, implemented directly on
 /// the io_uring_setup(2) / io_uring_enter(2) / io_uring_register(2) syscalls with
@@ -121,11 +127,5 @@ private:
   std::uint32_t sq_mask_ = 0;
   std::uint32_t cq_mask_ = 0;
 };
-
-/// io_uring_register(IORING_REGISTER_BUFFERS, ...) wrapper: registers nr fixed buffers.
-std::int32_t register_buffers(std::int32_t ring_fd, const iovec* iovecs, std::uint32_t nr);
-
-/// io_uring_register(IORING_UNREGISTER_BUFFERS, ...) wrapper.
-std::int32_t unregister_buffers(std::int32_t ring_fd);
 
 } // namespace dojio::detail

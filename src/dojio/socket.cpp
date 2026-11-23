@@ -38,16 +38,16 @@ std::int32_t map_family(AddressFamily family) {
   }
 }
 
-std::int32_t map_type(SocketType type) {
+std::uint32_t map_type(SocketType type) {
   switch (type) {
   case SocketType::Stream:
-    return SOCK_STREAM;
+    return static_cast<std::uint32_t>(SOCK_STREAM);
   case SocketType::Dgram:
-    return SOCK_DGRAM;
+    return static_cast<std::uint32_t>(SOCK_DGRAM);
   case SocketType::SeqPacket:
-    return SOCK_SEQPACKET;
+    return static_cast<std::uint32_t>(SOCK_SEQPACKET);
   case SocketType::Raw:
-    return SOCK_RAW;
+    return static_cast<std::uint32_t>(SOCK_RAW);
   default:
     unreachable();
   }
@@ -66,14 +66,14 @@ std::int32_t map_protocol(SocketProtocol protocol) {
   }
 }
 
-std::int32_t map_flags(SocketFlag flags) {
+std::uint32_t map_flags(SocketFlag flags) {
   const std::uint32_t f = static_cast<std::uint32_t>(flags);
-  std::int32_t out = 0;
+  std::uint32_t out = 0;
   if ((f & static_cast<std::uint32_t>(SocketFlag::NonBlock)) != 0) {
-    out |= SOCK_NONBLOCK;
+    out |= static_cast<std::uint32_t>(SOCK_NONBLOCK);
   }
   if ((f & static_cast<std::uint32_t>(SocketFlag::CloExec)) != 0) {
-    out |= SOCK_CLOEXEC;
+    out |= static_cast<std::uint32_t>(SOCK_CLOEXEC);
   }
   return out;
 }
@@ -81,8 +81,9 @@ std::int32_t map_flags(SocketFlag flags) {
 } // namespace
 
 Result<FileDescriptor> create_socket(AddressFamily family, SocketType type, SocketProtocol protocol, SocketFlag flags) {
-  const std::int32_t fd = static_cast<std::int32_t>(
-      ::socket(map_family(family), map_type(type) | map_flags(flags), map_protocol(protocol)));
+  const std::int32_t type_and_flags = static_cast<std::int32_t>(map_type(type) | map_flags(flags));
+  const std::int32_t fd =
+      static_cast<std::int32_t>(::socket(map_family(family), type_and_flags, map_protocol(protocol)));
   if (fd < 0) {
     return tl::unexpected(IoError{-errno});
   }

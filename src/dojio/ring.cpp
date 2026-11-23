@@ -29,14 +29,10 @@ long sys_io_uring_enter(std::int32_t fd, std::uint32_t to_submit, std::uint32_t 
   return ::syscall(__NR_io_uring_enter, fd, to_submit, min_complete, flags, nullptr, 0);
 }
 
-long sys_io_uring_register(std::int32_t fd, std::uint32_t opcode, const void* arg, std::uint32_t nr_args) {
-  return ::syscall(__NR_io_uring_register, fd, opcode, arg, nr_args);
-}
-
 void* map_ring(std::int32_t fd, std::uint64_t size, std::uint64_t offset) {
   // mmap takes a size_t length (C ABI boundary)
-  void* ptr = ::mmap(nullptr, static_cast<std::size_t>(size), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd,
-                     static_cast<off_t>(offset));
+  void* ptr = ::mmap(nullptr, static_cast<std::size_t>(size), combine_flags(PROT_READ, PROT_WRITE),
+                     combine_flags(MAP_SHARED, MAP_POPULATE), fd, static_cast<off_t>(offset));
   if (ptr == MAP_FAILED) {
     return nullptr;
   }
@@ -236,17 +232,6 @@ void copy_sqe(io_uring_sqe& dst, const Sqe& src) {
   default:
     break;
   }
-}
-
-std::int32_t register_buffers(std::int32_t ring_fd, const iovec* iovecs, std::uint32_t nr) {
-  enforce_precondition(ring_fd >= 0);
-  enforce_precondition(iovecs != nullptr && nr > 0);
-  return static_cast<std::int32_t>(sys_io_uring_register(ring_fd, IORING_REGISTER_BUFFERS, iovecs, nr));
-}
-
-std::int32_t unregister_buffers(std::int32_t ring_fd) {
-  enforce_precondition(ring_fd >= 0);
-  return static_cast<std::int32_t>(sys_io_uring_register(ring_fd, IORING_UNREGISTER_BUFFERS, nullptr, 0));
 }
 
 } // namespace dojio::detail
