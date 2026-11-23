@@ -2,7 +2,7 @@
   <img src="misc/dojio-logo.png" alt="dojio logo" width="200">
 </p>
 
-<p align="center">A high-performance io_uring interface for modern C++20.</p>
+<p align="center">A high-performance asynchronous I/O interface for modern C++</p>
 
 [![gcc](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=gcc%20build%20%2B%20tests%20%2B%20benches&label=gcc)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
 [![clang](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=clang%20build%20%2B%20tests%20%2B%20benches&label=clang)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
@@ -12,26 +12,28 @@
 
 ## Summary
 
-`dojio` is a header-and-static-library wrapper around the Linux `io_uring` kernel
-API, exposing it through a small, data-oriented C++20 interface. It is built
-directly on the raw kernel API (no liburing), with a focus on zero-copy moves,
-typed operation ids and a predictable completion model.
+`dojio` is a C++ library designed to make Asynchronous I/O in modern C++ as painless as possible while not giving up anything on performance.
 
+Dojio is designed around:
+- `io_uring` Pool based I/O
+- Data oriented API and value/move semantics
+- Not compromise on performance
+- `Share-nothing` architecture
+
+
+## Why I/O uring
+
+
+## Details
+ 
 The library ships as a static library, with tests built on
 [doctest](https://github.com/doctest/doctest) and benchmarks built on
 [nanobench](https://github.com/martinus/nanobench).
 
-## Goal
-
-Provide a solid, self-contained backbone for high-performance I/O and networking
-applications on Linux, by:
-
-- exposing `io_uring` through modern and safe C++20 features
-- being data-oriented and performance-focused
-- Focus on a "never blocking" API appropriate for high performance server or Fiber based io framework
-- Architecture "Zero sharing" (One RingEngine per thread, and message passing between thread)
-
 ### Operation model
+
+
+#### Event mode
 
 Every I/O operation is a struct that carries its own buffer, so `submit()` takes only the
 operation and its completion callback:
@@ -64,10 +66,10 @@ const dojio::OperationId id =
 shared one reference-counted and copyable, with the count, resource and object in a
 single allocation).
 
-### Processing modes
+### Processing options
 
 `RingEngine::process()` selects how the queued operations are driven:
-
+i
 | Mode | Behavior |
 | ---- | -------- |
 | `Batch` | Process every queued operation (ring and inline, including the ones chained from callbacks) until none is left. |
