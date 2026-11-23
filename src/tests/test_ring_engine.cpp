@@ -5,6 +5,7 @@
 #include <functional>
 #include <thread>
 #include <variant>
+#include <vector>
 
 #include <dojio/result.hpp>
 #include <dojio/ring_engine.hpp>
@@ -277,4 +278,154 @@ TEST_CASE("callbacks may submit new operations from the completion handler") {
   engine->process(dojio::RingEngine::ProcessMode::Batch);
   CHECK(stage == 2);
   CHECK(engine->count_operations(dojio::RingEngine::OperationState::Completed) == 2);
+}
+
+TEST_CASE("SQPOLL submit() publishes proactively before process() is called") {
+  auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = true});
+  if (!ring_engine_result.has_value()) {
+    CHECK(ring_engine_result.error().opcode == dojio::ErrorOpcode::IoUringSetup);
+    return;
+  }
+  auto engine = std::move(ring_engine_result).value();
+  REQUIRE(engine->sqpoll_enabled());
+  bool fired = false;
+  engine->submit(dojio::Timer{std::chrono::milliseconds(5)},
+                 [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                   CHECK(r.has_value());
+                   fired = true;
+                 });
+  // wait longer than the timer WITHOUT calling process()/poll(): the SQPOLL thread
+  // should already have picked up and completed the timer
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  const std::uint64_t dispatched = engine->poll();
+  CHECK(dispatched == 1);
+  CHECK(fired);
+  CHECK(engine->count_operations(dojio::RingEngine::OperationState::Pending) == 0);
+  CHECK(engine->count_operations(dojio::RingEngine::OperationState::Completed) == 1);
+}
+
+TEST_CASE("submitting more operations than sq_entries overflows cleanly into unsubmitted_") {
+  for (const bool sqpoll : {true, false}) {
+    CAPTURE(sqpoll);
+    auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 8, .sqpoll = sqpoll});
+    if (!ring_engine_result.has_value()) {
+      CHECK(ring_engine_result.error().opcode == dojio::ErrorOpcode::IoUringSetup);
+      continue;
+    }
+    auto engine = std::move(ring_engine_result).value();
+    using State = dojio::RingEngine::OperationState;
+    constexpr std::int32_t k_total = 24;
+    std::int32_t completed = 0;
+    for (std::int32_t i = 0; i < k_total; ++i) {
+      engine->submit(dojio::Timer{std::chrono::milliseconds(1)},
+                     [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                       CHECK(r.has_value());
+                       completed += 1;
+                     });
+    }
+    CHECK(engine->count_operations(State::Pending) == static_cast<std::uint64_t>(k_total));
+    const std::uint64_t dispatched = engine->process(dojio::RingEngine::ProcessMode::Batch);
+    CHECK(dispatched == static_cast<std::uint64_t>(k_total));
+    CHECK(completed == k_total);
+    CHECK(engine->count_operations(State::Pending) == 0);
+    CHECK(engine->count_operations(State::Completed) == static_cast<std::uint64_t>(k_total));
+    CHECK(engine->count_operations(State::Failed) == 0);
+  }
+}
+
+TEST_CASE("overflowed operations are flushed before blocking and can be cancelled in userspace") {
+  auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 8, .sqpoll = false});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
+  using State = dojio::RingEngine::OperationState;
+
+  // fill all 8 SQ slots with long timers
+  std::vector<dojio::OperationId> long_ids;
+  long_ids.reserve(8);
+  for (std::int32_t i = 0; i < 8; ++i) {
+    long_ids.push_back(engine->submit(dojio::Timer{std::chrono::seconds(30)},
+                                      [](dojio::Result<std::monostate>, dojio::OperationId, std::int32_t) {}));
+  }
+  // 9th op overflows into unsubmitted_: cancel it before process()
+  bool cancelled_called = false;
+  const dojio::OperationId overflow_cancel_id = engine->submit(
+      dojio::Timer{std::chrono::seconds(30)}, [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+        cancelled_called = true;
+        CHECK_FALSE(r.has_value());
+        CHECK(std::holds_alternative<dojio::Cancelled>(r.error()));
+      });
+  // 10th op also overflows into unsubmitted_: a short 5 ms timer
+  bool short_fired = false;
+  engine->submit(dojio::Timer{std::chrono::milliseconds(5)},
+                 [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                   CHECK(r.has_value());
+                   short_fired = true;
+                 });
+
+  CHECK(engine->cancel(overflow_cancel_id));
+  CHECK(cancelled_called);
+  CHECK_FALSE(engine->cancel(overflow_cancel_id));
+
+  // WaitOnce must submit the 8 long timers AND flush the overflowed 5 ms timer
+  // before waiting, so it returns as soon as the 5 ms timer fires
+  const auto start = std::chrono::steady_clock::now();
+  const std::uint64_t dispatched = engine->process(dojio::RingEngine::ProcessMode::WaitOnce);
+  CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds(1));
+  CHECK(dispatched == 1);
+  CHECK(short_fired);
+  CHECK(engine->count_operations(State::Completed) == 1);
+  CHECK(engine->count_operations(State::Failed) == 1);
+  CHECK(engine->count_operations(State::Pending) == 8);
+
+  for (const dojio::OperationId id : long_ids) {
+    CHECK(engine->cancel(id));
+  }
+  engine->process(dojio::RingEngine::ProcessMode::Batch);
+  CHECK(engine->count_operations(State::Pending) == 0);
+  CHECK(engine->count_operations(State::Failed) == 9);
+}
+
+TEST_CASE("process() and poll() respect the max_tasks cap") {
+  for (const bool sqpoll : {true, false}) {
+    CAPTURE(sqpoll);
+    auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
+    if (!ring_engine_result.has_value()) {
+      CHECK(ring_engine_result.error().opcode == dojio::ErrorOpcode::IoUringSetup);
+      continue;
+    }
+    auto engine = std::move(ring_engine_result).value();
+    using State = dojio::RingEngine::OperationState;
+    constexpr std::int32_t k_total = 10;
+    std::int32_t completed = 0;
+    for (std::int32_t i = 0; i < k_total; ++i) {
+      engine->submit(dojio::Timer{std::chrono::milliseconds(1)},
+                     [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                       CHECK(r.has_value());
+                       completed += 1;
+                     });
+    }
+    // max_tasks == 0 flushes SQEs without dispatching any callback
+    CHECK(engine->poll(0) == 0);
+    CHECK(completed == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+
+    // cap non-blocking poll to 3 tasks
+    const std::uint64_t first = engine->poll(3);
+    CHECK(first == 3);
+    CHECK(completed == 3);
+    CHECK(engine->count_operations(State::Pending) == 7);
+
+    // cap Batch to 4 tasks
+    const std::uint64_t second = engine->process(dojio::RingEngine::ProcessMode::Batch, 4);
+    CHECK(second == 4);
+    CHECK(completed == 7);
+    CHECK(engine->count_operations(State::Pending) == 3);
+
+    // drain the remaining 3 tasks
+    const std::uint64_t rest = engine->process(dojio::RingEngine::ProcessMode::Batch);
+    CHECK(rest == 3);
+    CHECK(completed == k_total);
+    CHECK(engine->count_operations(State::Pending) == 0);
+    CHECK(engine->count_operations(State::Completed) == static_cast<std::uint64_t>(k_total));
+  }
 }

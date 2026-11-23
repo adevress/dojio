@@ -193,3 +193,37 @@ TEST_CASE("Batch runs inline operations chained from a completion callback") {
     ::unlink(path.c_str());
   }
 }
+
+TEST_CASE("poll(max_tasks) caps inline operation dispatch") {
+  auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
+  using State = dojio::RingEngine::OperationState;
+  const std::string path = make_tmp_file("inline_max_tasks", "0123456789");
+  const std::int32_t fd = static_cast<std::int32_t>(::open(path.c_str(), O_RDWR));
+  REQUIRE(fd >= 0);
+
+  std::int32_t done = 0;
+  for (std::uint64_t len = 8; len >= 4; len -= 2) {
+    engine->submit(dojio::ftruncate(dojio::FileDescriptor{fd}, len),
+                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                     REQUIRE(r.has_value());
+                     CHECK(res == 0);
+                     done += 1;
+                   });
+  }
+  CHECK(engine->count_operations(State::Pending) == 3);
+  CHECK(engine->poll(1) == 1);
+  CHECK(done == 1);
+  CHECK(engine->count_operations(State::Pending) == 2);
+  CHECK(engine->poll(1) == 1);
+  CHECK(done == 2);
+  CHECK(engine->count_operations(State::Pending) == 1);
+  CHECK(engine->process(dojio::RingEngine::ProcessMode::Batch) == 1);
+  CHECK(done == 3);
+  CHECK(engine->count_operations(State::Pending) == 0);
+  CHECK(engine->count_operations(State::Completed) == 3);
+
+  ::close(fd);
+  ::unlink(path.c_str());
+}

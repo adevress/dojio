@@ -20,7 +20,7 @@
 
 namespace dojio::detail {
 
-/// Copies a dojio Sqe mirror onto a real kernel SQE.
+/// Copies a dojio Sqe mirror onto a zeroed kernel SQE (as returned by IoUring::reserve_sqe()).
 void copy_sqe(io_uring_sqe& dst, const Sqe& src);
 
 /// Combines flag constants as unsigned values (MISRA Rule 7.0.4) and returns the
@@ -108,24 +108,29 @@ public:
   /// io_uring_enter(2) wrapper.
   std::int32_t enter(std::uint32_t to_submit, std::uint32_t min_complete, std::uint32_t flags);
 
-  /// Consumes every completion event currently in the ring, invoking fn(user_data,
-  /// res, flags) for each, and advances the completion queue head once per batch
-  /// (a single release store instead of one per completion). Returns the number of
-  /// completions consumed. fn must not advance the CQ head itself.
-  template <typename Fn> std::uint32_t drain_cqes(Fn&& fn) {
+  /// Consumes completion events currently in the ring, invoking fn(user_data, res,
+  /// flags) for each, until the ring is empty or max_dispatched accepted events have
+  /// been collected (fn returns true when an event counts toward max_dispatched, and
+  /// false for skipped internal events such as cancel completions). Advances the
+  /// completion queue head once per batch (a single release store). Returns the
+  /// number of accepted completions. fn must not advance the CQ head itself.
+  template <typename Fn> std::uint32_t drain_cqes(std::uint32_t max_dispatched, Fn&& fn) {
     std::uint32_t head = std::atomic_ref<std::uint32_t>(*cq_head_).load(std::memory_order_relaxed);
     const std::uint32_t tail = std::atomic_ref<std::uint32_t>(*cq_tail_).load(std::memory_order_acquire);
-    std::uint32_t count = 0;
-    while (head != tail) {
+    std::uint32_t consumed = 0;
+    std::uint32_t dispatched = 0;
+    while (head != tail && dispatched < max_dispatched) {
       const io_uring_cqe& cqe = cqes_[head & cq_mask_];
-      fn(cqe.user_data, cqe.res, cqe.flags);
+      if (fn(cqe.user_data, cqe.res, cqe.flags)) {
+        dispatched += 1;
+      }
       head += 1;
-      count += 1;
+      consumed += 1;
     }
-    if (count > 0) {
+    if (consumed > 0) {
       std::atomic_ref<std::uint32_t>(*cq_head_).store(head, std::memory_order_release);
     }
-    return count;
+    return dispatched;
   }
 
 private:
@@ -156,7 +161,8 @@ private:
   std::uint32_t* sq_tail_ = nullptr;
   std::uint32_t* sq_array_ = nullptr;
   std::uint32_t* sq_flags_ = nullptr;
-  std::uint32_t sq_tail_shadow_ = 0; // application-side SQ tail (reserved slots included)
+  std::uint32_t sq_tail_shadow_ = 0;    // application-side SQ tail (reserved slots included)
+  std::uint32_t sq_tail_published_ = 0; // last SQ tail value published to *sq_tail_
   std::uint32_t* cq_head_ = nullptr;
   std::uint32_t* cq_tail_ = nullptr;
   io_uring_cqe* cqes_ = nullptr;

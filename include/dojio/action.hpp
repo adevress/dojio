@@ -91,8 +91,8 @@ template <typename Op, typename Buffer> using result_value_t = typename result_v
 
 /// Abstract base of every delayed action tracked by the RingEngine.
 ///
-/// The ring-facing state is a plain Sqe mirror; the library copies it onto the real
-/// kernel SQE, so no io_uring type appears here.
+/// The ring-facing state is filled on demand into a caller-provided Sqe mirror;
+/// the library copies it onto the real kernel SQE, so no io_uring type appears here.
 class ActionBase {
 public:
   explicit ActionBase(OperationId id, bool timer) : id_(id), timer_(timer) {}
@@ -110,16 +110,13 @@ public:
   /// Executes an inline operation, returning the raw result code.
   virtual std::int32_t execute_inline() { return -ENOSYS; }
 
-  /// Fills the SQE mirror (sqe()) from the stored operation and buffer.
-  virtual void fill() = 0;
+  /// Fills the caller-provided SQE mirror from the stored operation and buffer.
+  virtual void fill(Sqe& out) = 0;
 
   /// Dispatches the completion to the callback. res is the raw CQE result.
   virtual void complete(std::int32_t res) = 0;
 
-  /// The SQE mirror of this action, copied onto the kernel ring by the RingEngine.
-  [[nodiscard]] Sqe& sqe() { return sqe_; }
-
-  /// True once the SQE mirror has been copied onto the kernel submission queue.
+  /// True once the operation's SQE has been written into the kernel submission queue.
   [[nodiscard]] bool sqe_submitted() const { return sqe_submitted_; }
   void set_sqe_submitted() { sqe_submitted_ = true; }
 
@@ -130,7 +127,6 @@ private:
   OperationId id_;
   bool timer_;
   bool sqe_submitted_ = false;
-  Sqe sqe_{};
 };
 
 /// A delayed action: the completion handler of a submitted operation.
@@ -165,7 +161,7 @@ public:
     }
   }
 
-  void fill() override { fill_sqe(sqe()); }
+  void fill(Sqe& out) override { fill_sqe(out); }
 
   void complete(std::int32_t res) override {
     if (res == -ECANCELED) {

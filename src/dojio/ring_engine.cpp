@@ -3,10 +3,12 @@
 #include <dojio/contracts.hpp>
 #include <dojio/ring.hpp>
 
-#include <cerrno>
-#include <cstring>
-#include <optional>
+#include <sched.h>
 
+#include <cerrno>
+#include <cstddef>
+#include <limits>
+#include <optional>
 #include <vector>
 
 namespace dojio {
@@ -29,13 +31,10 @@ tl::expected<std::unique_ptr<RingEngine>, DojioError> RingEngine::create(RingEng
 RingEngine::RingEngine(std::unique_ptr<detail::IoUring> ring)
     : ring_(std::move(ring)), capabilities_(ring_->capabilities()), action_pool_(&ring_->action_pool()),
       pending_(static_cast<std::uint32_t>(ring_->sq_entries()) * 2U) {
-  // preallocate the work queues and the dispatch scratch buffers from the ring
-  // size: the completion ring can hold at most cq_entries events at once, and
-  // the submission ring bounds the number of queued operations
+  // preallocate the deferred queue and completion-hook scratch buffer from the ring
+  // size so process() never reallocates on the hot path
   unsubmitted_.reserve(ring_->sq_entries());
-  inline_pending_.reserve(ring_->sq_entries());
-  inline_scratch_.reserve(ring_->sq_entries());
-  done_.reserve(ring_->cq_entries() + ring_->sq_entries());
+  waiting_hook_.reserve(ring_->cq_entries() + ring_->sq_entries());
 }
 
 RingEngine::~RingEngine() = default;
@@ -52,35 +51,76 @@ std::chrono::milliseconds RingEngine::sqpoll_poll_time() const {
   return std::chrono::milliseconds(ring_->params().sq_thread_idle);
 }
 
+void RingEngine::enqueue_action(OperationId id, ActionBase& action) {
+  if (action.is_inline()) {
+    unsubmitted_.push_back(id);
+    return;
+  }
+  // preserve FIFO order: when earlier ring operations overflowed into unsubmitted_,
+  // queue this one behind them instead of bypassing them into a newly freed slot
+  if (unsubmitted_ring_count_ == 0 && try_enqueue_sqe(action)) {
+    if (ring_->sqpoll()) {
+      // proactive submission on SQPOLL: publish immediately so the kernel thread
+      // can begin executing the I/O before process() is called
+      ring_->publish_sqes();
+      wake_sqpoll_if_needed();
+    }
+    return;
+  }
+  unsubmitted_.push_back(id);
+  unsubmitted_ring_count_ += 1;
+}
+
+bool RingEngine::try_enqueue_sqe(ActionBase& action) {
+  io_uring_sqe* ksqe = ring_->reserve_sqe();
+  if (ksqe == nullptr) {
+    return false;
+  }
+  Sqe sqe{};
+  action.fill(sqe);
+  sqe.user_data = action.id().value;
+  detail::copy_sqe(*ksqe, sqe);
+  action.set_sqe_submitted();
+  return true;
+}
+
 bool RingEngine::cancel(OperationId id) {
   if (id.value == 0) {
     return false;
   }
   bool is_inline = false;
-  const bool found = pending_.visit(id, [&](const BoxPtr<ActionBase>& action) { is_inline = action->is_inline(); });
+  bool sqe_submitted = false;
+  const bool found = pending_.visit(id, [&](const BoxPtr<ActionBase>& action) {
+    is_inline = action->is_inline();
+    sqe_submitted = action->sqe_submitted();
+  });
   if (!found) {
     return false;
   }
-  if (is_inline) {
-    // inline operation (bind/listen/ftruncate/pipe on an old kernel) not executed yet: cancel it directly
+  if (is_inline || !sqe_submitted) {
+    // inline operation or deferred ring operation still in unsubmitted_: cancel
+    // directly in userspace without issuing IORING_OP_ASYNC_CANCEL
+    if (!is_inline) {
+      enforce_invariant(unsubmitted_ring_count_ > 0);
+      unsubmitted_ring_count_ -= 1;
+    }
     dispatch(id, -ECANCELED);
     return true;
   }
   // make sure the target SQE is in the kernel before the cancel request
-  flush(0);
+  static_cast<void>(submit_ring_sqes(0));
   io_uring_sqe* sqe = ring_->reserve_sqe();
   if (sqe == nullptr) {
-    flush(0);
+    wait_sq_space();
     sqe = ring_->reserve_sqe();
   }
-  // after a flush the submission queue always has room: a nullptr here is a bug
+  // after freeing SQ space the submission queue always has room: a nullptr here is a bug
   enforce_invariant(sqe != nullptr);
-  // cppcheck-suppress misra-cpp-2023-21.2.2 ; MISRA C++ deviation: memset zeroes the kernel SQE (sizeof-bounded)
-  std::memset(sqe, 0, sizeof(*sqe));
+  // reserve_sqe() already zeroed *sqe
   sqe->opcode = IORING_OP_ASYNC_CANCEL;
   sqe->addr = id.value;
   sqe->user_data = k_cancel_user_data;
-  flush(0);
+  static_cast<void>(submit_ring_sqes(0));
   return true;
 }
 
@@ -110,32 +150,40 @@ void RingEngine::wake_sqpoll_if_needed() {
   enforce_precondition(ret >= 0);
 }
 
-void RingEngine::flush(std::uint32_t min_complete) {
-  // copy every newly submitted SQE mirror into a reserved kernel SQE slot; the
-  // work queue only holds the operations queued since the last flush, so the
-  // cost is proportional to the new operations, not to the whole pending set
-  for (const OperationId id : unsubmitted_) {
-    // visit skips a cancelled operation; an already submitted one (e.g. re-flushed
-    // by an inner flush()) is left untouched
-    static_cast<void>(pending_.visit(id, [&](BoxPtr<ActionBase>& action) {
-      if (action->sqe_submitted()) {
-        return;
-      }
-      io_uring_sqe* ksqe = ring_->reserve_sqe();
-      if (ksqe == nullptr) {
-        // submission queue full: publish and submit synchronously to free a slot
-        ring_->publish_sqes();
-        enter_wait(ring_->pending_sqes(), 0);
-        ksqe = ring_->reserve_sqe();
-      }
-      // after a submit the submission queue always has room: a nullptr here is a bug
-      enforce_invariant(ksqe != nullptr);
-      detail::copy_sqe(*ksqe, action->sqe());
-      action->set_sqe_submitted();
-    }));
+void RingEngine::wait_sq_space() {
+  if (ring_->sqpoll()) {
+    ring_->publish_sqes();
+    wake_sqpoll_if_needed();
+    if (ring_->pending_sqes() < ring_->sq_entries()) {
+      return;
+    }
+#if defined(IORING_ENTER_SQ_WAIT)
+    std::int32_t ret = 0;
+    do {
+      ret = ring_->enter(0, 0, IORING_ENTER_SQ_WAIT);
+    } while (ret < 0 && errno == EINTR);
+    if (ret >= 0) {
+      return;
+    }
+    // kernels before 5.11 do not support IORING_ENTER_SQ_WAIT (EINVAL): yield until
+    // the SQPOLL kernel thread consumes at least one SQE
+    enforce_precondition(errno == EINVAL);
+#endif
+    while (ring_->pending_sqes() >= ring_->sq_entries()) {
+      wake_sqpoll_if_needed();
+      static_cast<void>(::sched_yield());
+    }
+    return;
   }
-  unsubmitted_.clear();
-  // publish the filled SQEs to the kernel (SQ tail); with SQPOLL the kernel
+  ring_->publish_sqes();
+  const std::uint32_t pending = ring_->pending_sqes();
+  if (pending > 0) {
+    enter_wait(pending, 0);
+  }
+}
+
+bool RingEngine::submit_ring_sqes(std::uint32_t min_complete) {
+  // publish any reserved SQEs to the kernel (SQ tail); with SQPOLL the kernel
   // thread may start consuming them from this point on
   ring_->publish_sqes();
   if (ring_->sqpoll()) {
@@ -147,67 +195,105 @@ void RingEngine::flush(std::uint32_t min_complete) {
     if (min_complete > 0 || ring_->cq_overflow()) {
       enter_wait(0, min_complete);
     }
-    return;
+    return false;
   }
   const std::uint32_t pending = ring_->pending_sqes();
   if (pending > 0) {
     enter_wait(pending, min_complete);
-  } else if (min_complete > 0 || ring_->cq_overflow()) {
+    return true;
+  }
+  if (min_complete > 0 || ring_->cq_overflow()) {
     enter_wait(0, min_complete);
   }
+  return false;
 }
 
-std::uint64_t RingEngine::run_inline_pending() {
-  // O(1) no-op when no inline operation was ever queued (the common case on a
-  // kernel that exposes every opcode)
-  if (inline_pending_.empty()) {
-    return 0;
+void RingEngine::reap_completions(std::uint64_t max_hook_size) {
+  const std::uint64_t current = static_cast<std::uint64_t>(waiting_hook_.size());
+  if (current >= max_hook_size) {
+    return;
   }
-  // detach the queue so the completion callbacks may submit new inline operations
-  // (pushed to the now-empty inline_pending_) without invalidating the iteration
-  inline_scratch_.clear();
-  inline_scratch_.swap(inline_pending_);
-  done_.clear();
-  for (const OperationId id : inline_scratch_) {
-    std::optional<BoxPtr<ActionBase>> action = pending_.take(id);
-    if (!action.has_value()) {
-      continue;
+  const std::uint64_t budget = max_hook_size - current;
+  const std::uint32_t max_cqes = budget > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())
+                                     ? std::numeric_limits<std::uint32_t>::max()
+                                     : static_cast<std::uint32_t>(budget);
+  static_cast<void>(
+      ring_->drain_cqes(max_cqes, [this](std::uint64_t user_data, std::int32_t res, std::uint32_t /*flags*/) -> bool {
+        if (user_data == k_cancel_user_data) {
+          return false;
+        }
+        std::optional<BoxPtr<ActionBase>> action = pending_.take(OperationId{user_data});
+        if (!action.has_value()) {
+          return false;
+        }
+        waiting_hook_.emplace_back(std::move(*action), res);
+        return true;
+      }));
+}
+
+bool RingEngine::drain_unsubmitted(std::uint64_t max_hook_size) {
+  bool submitted_to_ring = false;
+  while (unsubmitted_head_ < static_cast<std::uint64_t>(unsubmitted_.size())) {
+    const OperationId id = unsubmitted_[static_cast<std::size_t>(unsubmitted_head_)];
+    enum class Step : std::uint8_t { Skip, RunInline, Enqueued, Stop };
+    Step step = Step::Skip;
+    static_cast<void>(pending_.visit(id, [&](BoxPtr<ActionBase>& action) {
+      if (action->is_inline()) {
+        if (static_cast<std::uint64_t>(waiting_hook_.size()) >= max_hook_size) {
+          step = Step::Stop;
+        } else {
+          step = Step::RunInline;
+        }
+        return;
+      }
+      if (action->sqe_submitted()) {
+        step = Step::Skip;
+        return;
+      }
+      if (try_enqueue_sqe(*action)) {
+        step = Step::Enqueued;
+      } else {
+        step = Step::Stop;
+      }
+    }));
+    if (step == Step::Stop) {
+      break;
     }
-    const std::int32_t res = (*action)->execute_inline();
-    done_.emplace_back(std::move(*action), res);
+    unsubmitted_head_ += 1;
+    if (step == Step::RunInline) {
+      std::optional<BoxPtr<ActionBase>> action = pending_.take(id);
+      if (action.has_value()) {
+        const std::int32_t res = (*action)->execute_inline();
+        waiting_hook_.emplace_back(std::move(*action), res);
+      }
+    } else if (step == Step::Enqueued) {
+      enforce_invariant(unsubmitted_ring_count_ > 0);
+      unsubmitted_ring_count_ -= 1;
+      submitted_to_ring = true;
+    }
   }
-  inline_scratch_.clear();
-  const std::uint64_t dispatched = static_cast<std::uint64_t>(done_.size());
-  for (auto& [action, res] : done_) {
+  if (unsubmitted_head_ == static_cast<std::uint64_t>(unsubmitted_.size())) {
+    unsubmitted_.clear();
+    unsubmitted_head_ = 0;
+  } else if (unsubmitted_head_ >= static_cast<std::uint64_t>(ring_->sq_entries())) {
+    unsubmitted_.erase(unsubmitted_.begin(), unsubmitted_.begin() + static_cast<std::ptrdiff_t>(unsubmitted_head_));
+    unsubmitted_head_ = 0;
+  }
+  if (submitted_to_ring && ring_->sqpoll()) {
+    ring_->publish_sqes();
+    wake_sqpoll_if_needed();
+  }
+  return submitted_to_ring;
+}
+
+std::uint64_t RingEngine::run_waiting_hooks() {
+  const std::uint64_t dispatched = static_cast<std::uint64_t>(waiting_hook_.size());
+  for (auto& [action, res] : waiting_hook_) {
     finish(*action, res);
   }
   // destroy the completed actions now (as a local vector would) and keep the
   // reserved capacity for the next call
-  done_.clear();
-  return dispatched;
-}
-
-std::uint64_t RingEngine::reap_and_dispatch() {
-  done_.clear();
-  // consume the whole completion ring, extracting the actions from pending_, and
-  // only then run the completion handlers (a callback may submit new operations)
-  static_cast<void>(ring_->drain_cqes([this](std::uint64_t user_data, std::int32_t res, std::uint32_t /*flags*/) {
-    if (user_data == k_cancel_user_data) {
-      return;
-    }
-    std::optional<BoxPtr<ActionBase>> action = pending_.take(OperationId{user_data});
-    if (!action.has_value()) {
-      return;
-    }
-    done_.emplace_back(std::move(*action), res);
-  }));
-  const std::uint64_t dispatched = static_cast<std::uint64_t>(done_.size());
-  for (auto& [action, res] : done_) {
-    finish(*action, res);
-  }
-  // destroy the completed actions now (as a local vector would) and keep the
-  // reserved capacity for the next call
-  done_.clear();
+  waiting_hook_.clear();
   return dispatched;
 }
 
@@ -230,48 +316,70 @@ void RingEngine::finish(ActionBase& action, std::int32_t res) {
   action.complete(res);
 }
 
-std::uint64_t RingEngine::poll() {
-  // non-blocking: submit the queued operations and dispatch only the completions
-  // that are already available (flush(0) never waits)
-  const std::uint64_t inline_dispatched = run_inline_pending();
-  flush(0);
-  const std::uint64_t ring_dispatched = reap_and_dispatch();
-  return inline_dispatched + ring_dispatched;
-}
+std::uint64_t RingEngine::poll(std::uint64_t max_tasks) { return process(ProcessMode::NonBlocking, max_tasks); }
 
-void RingEngine::process(ProcessMode mode) {
+std::uint64_t RingEngine::process(ProcessMode mode, std::uint64_t max_tasks) {
   stop_requested_ = false;
-  if (mode == ProcessMode::NonBlocking) {
-    // submit the queued operations and dispatch only the completions that are
-    // already ready; flush(0) submits without ever waiting on the kernel
-    static_cast<void>(poll());
-    return;
+  if (max_tasks == 0) {
+    static_cast<void>(drain_unsubmitted(0));
+    static_cast<void>(submit_ring_sqes(0));
+    return 0;
   }
-  if (mode == ProcessMode::WaitOnce) {
-    // dispatch whatever is already ready; blocking only when nothing was ready
-    // and at least one operation is still pending
-    if (poll() > 0) {
-      return;
+
+  std::uint64_t total_dispatched = 0;
+  for (;;) {
+    const std::uint64_t remaining = max_tasks - total_dispatched;
+
+    // 1. Collect ready completions from the CQ ring into waiting_hook_ (capped to
+    //    the remaining task budget).
+    reap_completions(remaining);
+
+    // 2. Drain unsubmitted_: enqueue deferred ring ops into free SQ slots and
+    //    execute inline ops into waiting_hook_ (also capped to remaining).
+    static_cast<void>(drain_unsubmitted(remaining));
+
+    // 3. Invoke all collected completion callbacks in one pass.
+    total_dispatched += run_waiting_hooks();
+
+    const bool reached_limit = total_dispatched >= max_tasks;
+    const bool stopped = (mode == ProcessMode::Forever && stop_requested_);
+    const bool done_wait_once = (mode == ProcessMode::WaitOnce && total_dispatched > 0);
+    if (pending_.empty() || reached_limit || stopped || done_wait_once) {
+      // flush any SQEs queued before or during callbacks without blocking
+      static_cast<void>(drain_unsubmitted(0));
+      static_cast<void>(submit_ring_sqes(0));
+      return total_dispatched;
     }
-    if (!pending_.empty()) {
-      flush(1);
-      reap_and_dispatch();
+
+    if (mode == ProcessMode::NonBlocking) {
+      // submit any pending SQEs without waiting; on a non-SQPOLL ring, operations
+      // that complete synchronously inside io_uring_enter(2) are immediately ready
+      // in the CQ ring, so run one trailing reap + hook pass within the budget
+      if (submit_ring_sqes(0)) {
+        const std::uint64_t after_submit_remaining = max_tasks - total_dispatched;
+        reap_completions(after_submit_remaining);
+        total_dispatched += run_waiting_hooks();
+        static_cast<void>(drain_unsubmitted(0));
+        static_cast<void>(submit_ring_sqes(0));
+      }
+      return total_dispatched;
     }
-    return;
-  }
-  // Batch / Forever: process every operation registered in pending_ (ring and
-  // inline, including the ones chained from completion callbacks) and return as
-  // soon as none is left. Forever additionally stops when request_stop() is called.
-  while (!pending_.empty()) {
-    static_cast<void>(run_inline_pending());
-    if (pending_.empty() || (mode == ProcessMode::Forever && stop_requested_)) {
-      return;
+
+    // 4. Blocking path (Batch / Forever / WaitOnce with nothing dispatched yet):
+    //    flush a full SQ without blocking on completions so deferred ring ops are
+    //    enqueued before waiting, and loop back immediately if callbacks queued
+    //    inline operations (there may be no in-flight ring SQEs to wait on).
+    if (unsubmitted_ring_count_ > 0) {
+      wait_sq_space();
+      continue;
     }
-    // submit the SQEs queued so far (including the ones queued by callbacks) and
-    // wait for at least one completion (io_uring_enter may return before
-    // min_complete > 1 events are available, hence the loop)
-    flush(1);
-    reap_and_dispatch();
+    if (unsubmitted_head_ < static_cast<std::uint64_t>(unsubmitted_.size())) {
+      continue;
+    }
+
+    // submit pending SQEs and wait for at least one completion, then loop back to
+    // reap and dispatch it
+    static_cast<void>(submit_ring_sqes(1));
   }
 }
 

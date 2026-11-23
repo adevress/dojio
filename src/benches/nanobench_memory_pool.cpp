@@ -54,15 +54,15 @@ int main() {
     ankerl::nanobench::doNotOptimizeAway(pool.active_count());
   });
 
-  bench.run("borrow + return 1 buffer, 4095/4096 held x1000", [&] {
-    auto pool_result = dojio::RegisteredMemoryPool::create(engine->ring(), 4096, 4096);
+  bench.run("borrow + return 1 buffer, 409/410 held x1000", [&] {
+    auto pool_result = dojio::RegisteredMemoryPool::create(engine->ring(), 4096, 410);
     if (!pool_result.has_value()) {
       throw std::runtime_error(pool_result.error().message);
     }
     auto& pool = *pool_result;
     std::vector<dojio::RegisteredBuffer> held;
-    held.reserve(4095);
-    for (std::int32_t i = 0; i < 4095; ++i) {
+    held.reserve(409);
+    for (std::int32_t i = 0; i < 409; ++i) {
       held.push_back(pool.borrow().value());
     }
     for (std::int32_t i = 0; i < 1000; ++i) {

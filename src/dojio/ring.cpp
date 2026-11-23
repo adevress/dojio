@@ -194,6 +194,10 @@ io_uring_sqe* IoUring::reserve_sqe() {
 }
 
 void IoUring::publish_sqes() {
+  if (sq_tail_published_ == sq_tail_shadow_) {
+    return;
+  }
+  sq_tail_published_ = sq_tail_shadow_;
   // publish the whole batch at once: the release store orders the SQE contents
   // and the SQ array writes before the kernel (or the SQPOLL thread) reads them
   std::atomic_ref<std::uint32_t>(*sq_tail_).store(sq_tail_shadow_, std::memory_order_release);
@@ -216,8 +220,7 @@ bool IoUring::sqpoll_needs_wakeup() const {
 std::int32_t IoUring::wake_sqpoll() { return enter(0, 0, IORING_ENTER_SQ_WAKEUP); }
 
 void copy_sqe(io_uring_sqe& dst, const Sqe& src) {
-  // cppcheck-suppress misra-cpp-2023-21.2.2 ; MISRA C++ deviation: memset zeroes the kernel SQE (sizeof-bounded)
-  std::memset(&dst, 0, sizeof(dst));
+  // dst is already zeroed by IoUring::reserve_sqe()
   dst.opcode = static_cast<std::uint8_t>(src.opcode);
   dst.fd = src.fd;
   dst.addr = src.addr;

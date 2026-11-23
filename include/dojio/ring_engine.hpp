@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <memory_resource>
 #include <utility>
@@ -55,10 +56,11 @@ struct RingEngineOptions {
 /// demo_tcp_hello demo).
 ///
 /// Usage: auto engine = RingEngine::create(RingEngineOptions{...}); check the returned
-/// tl::expected, then submit() queues
-/// an operation (all parameters are passed by value, buffers are moved) and returns
-/// a typed OperationId; process() pushes the queued operations to the kernel and
-/// dispatches their completions.
+/// tl::expected, then submit() registers an operation straight onto the underlying
+/// io_uring submission queue (proactively publishing on SQPOLL rings, or deferring to
+/// an internal queue only for inline operations or when the SQ ring is full) and
+/// returns a typed OperationId; process() / poll() drives submission, completion
+/// reaping and callback dispatch.
 class RingEngine {
 public:
   /// Selects how process() behaves.
@@ -130,16 +132,16 @@ public:
   /// code (counted as a failure). Returns false when the id is unknown.
   bool cancel(OperationId id);
 
-  /// Processes operations according to mode.
-  void process(ProcessMode mode);
+  /// Processes operations according to mode, dispatching at most max_tasks
+  /// completion callbacks, and returns the number of callbacks dispatched.
+  std::uint64_t process(ProcessMode mode, std::uint64_t max_tasks = std::numeric_limits<std::uint64_t>::max());
 
-  /// Non-blocking convenience for fiber / event-loop schedulers: runs the inline
-  /// pending operations, submits the queued operations without waiting, dispatches
-  /// the completions that are already available and returns the number of dispatched
+  /// Non-blocking convenience for fiber / event-loop schedulers: equivalent to
+  /// process(ProcessMode::NonBlocking, max_tasks). Returns the number of dispatched
   /// callbacks (inline + ring).
   ///
   /// A scheduler can yield or park the fiber when the returned count is zero.
-  std::uint64_t poll();
+  std::uint64_t poll(std::uint64_t max_tasks = std::numeric_limits<std::uint64_t>::max());
 
   /// Interrupts a process(ProcessMode::Forever) loop; checked between batches.
   void request_stop() { stop_requested_ = true; }
@@ -185,15 +187,11 @@ private:
       std::pmr::polymorphic_allocator<ActionType> allocator{action_pool_};
       auto action = BoxPtr<ActionType>::make(allocator, id, std::move(op), std::move(buffer), std::move(callback),
                                              timer, capabilities_);
-      if (action->is_inline()) {
-        inline_pending_.push_back(id);
-      } else {
-        // fill the SQE mirror now; the RingEngine copies it onto the kernel ring at flush
-        action->fill();
-        action->sqe().user_data = id.value;
-        unsubmitted_.push_back(id);
-      }
+      ActionBase& action_ref = *action;
+      // insert into pending_ before writing to the ring so an SQPOLL kernel thread
+      // observing the SQE immediately always sees a live, stable Action
       pending_.assign(id, std::move(action));
+      enqueue_action(id, action_ref);
     } catch (...) {
       pending_.erase(id);
       throw;
@@ -201,16 +199,30 @@ private:
     return id;
   }
 
-  /// Copies every queued SQE mirror onto the kernel submission queue and submits it;
-  /// when min_complete > 0, also waits for at least that many completions.
-  void flush(std::uint32_t min_complete);
-  /// Executes the operations dispatched inline at submission time (a syscall-backed
-  /// operation whose io_uring opcode the ring does not expose) and dispatches them.
+  /// Registers a newly submitted action straight onto the kernel SQ ring when
+  /// possible (publishing immediately on SQPOLL), or defers it to unsubmitted_
+  /// when the operation is inline or the SQ ring is full.
+  void enqueue_action(OperationId id, ActionBase& action);
+  /// Reserves a kernel SQE slot and writes action into it. Returns false when the
+  /// kernel submission queue is full.
+  bool try_enqueue_sqe(ActionBase& action);
+  /// Reaps available CQ completions into waiting_hook_ until waiting_hook_.size()
+  /// reaches max_hook_size or the CQ ring is empty.
+  void reap_completions(std::uint64_t max_hook_size);
+  /// Drains unsubmitted_ FIFO: enqueues deferred ring operations into free SQ slots
+  /// and executes inline operations into waiting_hook_ (while waiting_hook_.size()
+  /// < max_hook_size). Returns true when at least one deferred ring SQE was enqueued.
+  bool drain_unsubmitted(std::uint64_t max_hook_size);
+  /// Invokes all completion callbacks collected in waiting_hook_ and clears it.
   /// Returns the number of callbacks dispatched.
-  std::uint64_t run_inline_pending();
-  /// Reaps every available completion and dispatches it. Returns the number of
-  /// callbacks dispatched.
-  std::uint64_t reap_and_dispatch();
+  std::uint64_t run_waiting_hooks();
+  /// Publishes pending SQEs to the kernel and calls io_uring_enter(2) when needed
+  /// (to submit on non-SQPOLL rings, to wait for min_complete > 0 completions, or
+  /// to flush a CQ overflow). Returns true when non-SQPOLL SQEs were submitted.
+  bool submit_ring_sqes(std::uint32_t min_complete);
+  /// Frees at least one slot in a full kernel submission queue without blocking on
+  /// completions (submits pending SQEs on non-SQPOLL; waits for SQ space on SQPOLL).
+  void wait_sq_space();
   void dispatch(OperationId id, std::int32_t res);
   void finish(ActionBase& action, std::int32_t res);
   /// io_uring_enter with EINTR retry; any other error is a contract failure.
@@ -229,19 +241,19 @@ private:
   std::pmr::unsynchronized_pool_resource* action_pool_ = nullptr;
   // pending operations, addressed by their OperationId (O(1) index + generation)
   detail::SlotTable<BoxPtr<ActionBase>> pending_;
-  // Work queues of the operation ids that still need a ring submission
-  // (unsubmitted_) or an inline execution (inline_pending_). They keep flush() and
-  // run_inline_pending() proportional to the new operations, not to the whole
-  // pending set. inline_scratch_ lets run_inline_pending() detach the queue so the
-  // completion callbacks can submit new inline operations safely.
+  // FIFO queue of operation ids that could not be placed on the kernel ring at
+  // submit() time: inline operations (syscall-backed ops on older kernels) and
+  // overflowed ring operations (when the kernel SQ ring was full). Consumed via
+  // unsubmitted_head_ for O(1) front pop.
   std::vector<OperationId> unsubmitted_;
-  std::vector<OperationId> inline_pending_;
-  std::vector<OperationId> inline_scratch_;
-  // Scratch buffer for the dispatch loops, preallocated once from the ring
-  // size in the constructor so run_inline_pending()/reap_and_dispatch() never
-  // reallocate on the hot path. Both loops extract the completed actions from
-  // pending_ into it before running the completion handlers.
-  std::vector<std::pair<BoxPtr<ActionBase>, std::int32_t>> done_;
+  std::uint64_t unsubmitted_head_ = 0;
+  // Number of live ring (non-inline) operations currently queued in unsubmitted_.
+  // While > 0, new ring submissions append to unsubmitted_ to preserve FIFO order.
+  std::uint64_t unsubmitted_ring_count_ = 0;
+  // Completed actions (reaped from the CQ ring or executed inline) waiting for their
+  // completion callbacks to run, preallocated once from the ring size so process()
+  // never reallocates on the hot path.
+  std::vector<std::pair<BoxPtr<ActionBase>, std::int32_t>> waiting_hook_;
   std::uint64_t completed_ = 0;
   std::uint64_t failed_ = 0;
   bool stop_requested_ = false;

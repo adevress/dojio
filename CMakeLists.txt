@@ -10,6 +10,7 @@ option(DOJIO_SANITIZER_MEMORY "Enable MemorySanitizer for testing and debug (cla
 option(DOJIO_SANITIZER_UNDEFINED "Enable UndefinedBehaviorSanitizer for testing and debug" OFF)
 option(DOJIO_LTO_OPT "Enable LTO optimization" ON)
 option(DOJIO_STATIC_BUILD "Produce static binaries" OFF)
+option(DOJIO_SYS_DEBUGGING "Enable low-level syscall debugging logs (detail::dojio_debug)" OFF)
 
 # the Address and Memory sanitizers install incompatible runtimes and cannot be
 # linked into the same binary

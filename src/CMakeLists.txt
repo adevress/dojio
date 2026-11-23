@@ -27,6 +27,11 @@ function(dojio_add_library target_name)
     target_link_libraries(${target_name} PRIVATE $<BUILD_INTERFACE:fmt::fmt> ${LIB_PRIVATE_LIBS})
 
     target_compile_options(${target_name} PRIVATE ${DOJIO_COMMON_FLAGS})
+
+    # opt-in low-level syscall tracing (see src/dojio/debug.hpp); OFF by default
+    if(DOJIO_SYS_DEBUGGING)
+        target_compile_definitions(${target_name} PRIVATE DOJIO_SYS_DEBUGGING)
+    endif()
 endfunction()
 
 function(dojio_add_test target_name)

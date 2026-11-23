@@ -30,15 +30,21 @@ RingEngine::RingEngine(std::unique_ptr<detail::IoUring> ring) : ring_(std::move(
 
 RingEngine::~RingEngine() = default;
 
+void RingEngine::enqueue_action(OperationId, ActionBase&) { unreachable(); }
+
 bool RingEngine::cancel(OperationId) {
   unreachable();
   // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
   return false;
 }
 
-void RingEngine::process(ProcessMode) { unreachable(); }
+std::uint64_t RingEngine::process(ProcessMode, std::uint64_t) {
+  unreachable();
+  // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
+  return 0;
+}
 
-std::uint64_t RingEngine::poll() {
+std::uint64_t RingEngine::poll(std::uint64_t) {
   unreachable();
   // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
   return 0;
