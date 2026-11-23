@@ -76,27 +76,21 @@ TEST_CASE("every operation has a free function returning a constructed operation
   CHECK(timeout.ts.nsec == 500000000);
 }
 
-TEST_CASE("extract_os_version caches the kernel version and drives the dispatcher") {
-  const dojio::detail::OsVersion& version = dojio::detail::extract_os_version();
-  // the version is cached in a function-local static: the same object is returned
-  CHECK(&version == &dojio::detail::extract_os_version());
 #if defined(__linux__)
-  CHECK(version.major > 0);
-  // the capability queries follow the kernel version thresholds
-  CHECK(dojio::detail::kernel_supports_io_uring() == (version.major > 5 || (version.major == 5 && version.minor >= 1)));
-  CHECK(dojio::detail::kernel_supports_bind_listen() ==
-        (version.major > 6 || (version.major == 6 && version.minor >= 11)));
-  CHECK(dojio::detail::kernel_supports_ftruncate() ==
-        (version.major > 6 || (version.major == 6 && version.minor >= 9)));
-  CHECK(dojio::detail::kernel_supports_pipe() == (version.major > 6 || (version.major == 6 && version.minor >= 16)));
-#else
-  CHECK(version.major == 0);
-  CHECK_FALSE(dojio::detail::kernel_supports_io_uring());
-  CHECK_FALSE(dojio::detail::kernel_supports_bind_listen());
-  CHECK_FALSE(dojio::detail::kernel_supports_ftruncate());
-  CHECK_FALSE(dojio::detail::kernel_supports_pipe());
-#endif
+TEST_CASE("supports_op reports the opcodes the running kernel exposes") {
+  auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
+  // READ and TIMEOUT have been part of io_uring since it appeared in Linux 5.1:
+  // every kernel that can create a ring exposes them (IORING_REGISTER_PROBE)
+  CHECK(engine->supports_op(dojio::IoOp::Read));
+  CHECK(engine->supports_op(dojio::IoOp::Timeout));
+  CHECK(engine->capabilities().bind_listen ==
+        (engine->supports_op(dojio::IoOp::Bind) && engine->supports_op(dojio::IoOp::Listen)));
+  CHECK(engine->capabilities().ftruncate == engine->supports_op(dojio::IoOp::Ftruncate));
+  CHECK(engine->capabilities().pipe == engine->supports_op(dojio::IoOp::Pipe));
 }
+#endif
 
 TEST_CASE("Accept submitted with a static AcceptBuffer receives the peer address") {
   for (const bool sqpoll : {true, false}) {

@@ -41,29 +41,6 @@ std::int32_t pipe_fd(std::int32_t* fds, std::int32_t flags);
 /// Reads the kernel-filled statx buffer and returns the equivalent struct stat.
 [[nodiscard]] struct stat statx_to_stat(const void* data, std::uint64_t size);
 
-/// A parsed Linux kernel version (major.minor.patch), as reported by uname(2).
-struct OsVersion {
-  std::int32_t major = 0;
-  std::int32_t minor = 0;
-  std::int32_t patch = 0;
-};
-
-/// The running kernel version, extracted from uname(2).release and cached in a
-/// function-local static variable (thread-safe C++11 initialization); the returned
-/// reference is stable for the lifetime of the process. Returns 0.0.0 on
-/// non-Linux platforms.
-const OsVersion& extract_os_version();
-
-/// True when the running kernel exposes io_uring at all (Linux 5.1+), and therefore
-/// its fixed-buffer table (IORING_REGISTER_BUFFERS).
-bool kernel_supports_io_uring();
-/// True when the running kernel exposes IORING_OP_BIND / IORING_OP_LISTEN (Linux 6.11+).
-bool kernel_supports_bind_listen();
-/// True when the running kernel exposes IORING_OP_FTRUNCATE (Linux 6.9+).
-bool kernel_supports_ftruncate();
-/// True when the running kernel exposes IORING_OP_PIPE (Linux 6.16+).
-bool kernel_supports_pipe();
-
 } // namespace detail
 
 /// Concept for the buffers accepted by RingEngine::submit: std::vector, std::array or
@@ -114,8 +91,8 @@ template <typename Op, typename Buffer> using result_value_t = typename result_v
 
 /// Abstract base of every delayed action tracked by the RingEngine.
 ///
-/// The ring-facing state is a plain Sqe mirror; the library copies it onto the real
-/// kernel SQE, so no io_uring type appears here.
+/// The ring-facing state is filled on demand into a caller-provided Sqe mirror;
+/// the library copies it onto the real kernel SQE, so no io_uring type appears here.
 class ActionBase {
 public:
   explicit ActionBase(OperationId id, bool timer) : id_(id), timer_(timer) {}
@@ -126,23 +103,20 @@ public:
   /// True when the operation is executed synchronously by the RingEngine when the
   /// current batch is processed, instead of being pushed to the kernel ring. The
   /// Action decides this at submission time (see compute_inline): an operation with
-  /// an io_uring opcode is inline only when the running kernel does not expose it (or
-  /// when the build simulates an old kernel, see DOJIO_FORCE_LINUX_OLD_KERNEL).
+  /// an io_uring opcode is inline only when the ring does not expose it (or when the
+  /// build simulates an old kernel, see DOJIO_FORCE_LINUX_OLD_KERNEL).
   [[nodiscard]] virtual bool is_inline() const { return false; }
 
   /// Executes an inline operation, returning the raw result code.
   virtual std::int32_t execute_inline() { return -ENOSYS; }
 
-  /// Fills the SQE mirror (sqe()) from the stored operation and buffer.
-  virtual void fill() = 0;
+  /// Fills the caller-provided SQE mirror from the stored operation and buffer.
+  virtual void fill(Sqe& out) = 0;
 
   /// Dispatches the completion to the callback. res is the raw CQE result.
   virtual void complete(std::int32_t res) = 0;
 
-  /// The SQE mirror of this action, copied onto the kernel ring by the RingEngine.
-  [[nodiscard]] Sqe& sqe() { return sqe_; }
-
-  /// True once the SQE mirror has been copied onto the kernel submission queue.
+  /// True once the operation's SQE has been written into the kernel submission queue.
   [[nodiscard]] bool sqe_submitted() const { return sqe_submitted_; }
   void set_sqe_submitted() { sqe_submitted_ = true; }
 
@@ -153,7 +127,6 @@ private:
   OperationId id_;
   bool timer_;
   bool sqe_submitted_ = false;
-  Sqe sqe_{};
 };
 
 /// A delayed action: the completion handler of a submitted operation.
@@ -166,9 +139,9 @@ template <typename Op, typename Buffer, typename Callback> class Action final : 
 public:
   using Value = result_value_t<Op, Buffer>;
 
-  Action(OperationId id, Op op, Buffer buffer, Callback callback, bool timer)
+  Action(OperationId id, Op op, Buffer buffer, Callback callback, bool timer, OpCapabilities capabilities)
       : ActionBase(id, timer), op_(std::move(op)), buffer_(std::move(buffer)), callback_(std::move(callback)),
-        inline_(compute_inline()) {}
+        inline_(compute_inline(capabilities)) {}
 
   [[nodiscard]] bool is_inline() const override { return inline_; }
 
@@ -188,7 +161,7 @@ public:
     }
   }
 
-  void fill() override { fill_sqe(sqe()); }
+  void fill(Sqe& out) override { fill_sqe(out); }
 
   void complete(std::int32_t res) override {
     if (res == -ECANCELED) {
@@ -337,9 +310,9 @@ private:
   }
 
   /// Dispatcher run at submission time: a syscall-backed operation goes to the
-  /// io_uring submission queue when the running kernel exposes its opcode, and is
-  /// executed synchronously (inline) when it does not.
-  static bool compute_inline() {
+  /// io_uring submission queue when the ring exposes its opcode, and is executed
+  /// synchronously (inline) when it does not.
+  static bool compute_inline(OpCapabilities capabilities) {
     // DOJIO_FORCE_LINUX_OLD_KERNEL forces the inline path so it is covered on a recent
     // kernel (see the dojio_old_linux_compat_tests target).
     [[maybe_unused]] constexpr auto simulated_old_kernel = [] {
@@ -352,11 +325,11 @@ private:
     if constexpr (InlineOperation<Op>) {
       return true;
     } else if constexpr (std::is_same_v<Op, ListenOp> || std::is_same_v<Op, BindOp>) {
-      return simulated_old_kernel() || !detail::kernel_supports_bind_listen();
+      return simulated_old_kernel() || !capabilities.bind_listen;
     } else if constexpr (std::is_same_v<Op, FtruncateOp>) {
-      return simulated_old_kernel() || !detail::kernel_supports_ftruncate();
+      return simulated_old_kernel() || !capabilities.ftruncate;
     } else if constexpr (std::is_same_v<Op, PipeOp>) {
-      return simulated_old_kernel() || !detail::kernel_supports_pipe();
+      return simulated_old_kernel() || !capabilities.pipe;
     } else {
       return false;
     }

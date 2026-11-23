@@ -26,9 +26,11 @@ tl::expected<std::unique_ptr<RingEngine>, DojioError> RingEngine::create(RingEng
   return tl::unexpected(not_supported_error("RingEngine"));
 }
 
-RingEngine::RingEngine(std::unique_ptr<detail::IoUring> ring) : ring_(std::move(ring)), pending_(&pool_resource_) {}
+RingEngine::RingEngine(std::unique_ptr<detail::IoUring> ring) : ring_(std::move(ring)) {}
 
 RingEngine::~RingEngine() = default;
+
+void RingEngine::enqueue_action(OperationId, ActionBase&) { unreachable(); }
 
 bool RingEngine::cancel(OperationId) {
   unreachable();
@@ -36,7 +38,29 @@ bool RingEngine::cancel(OperationId) {
   return false;
 }
 
-void RingEngine::process(ProcessMode) { unreachable(); }
+std::uint64_t RingEngine::process(ProcessMode, std::uint64_t) {
+  unreachable();
+  // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
+  return 0;
+}
+
+std::uint64_t RingEngine::poll(std::uint64_t) {
+  unreachable();
+  // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
+  return 0;
+}
+
+bool RingEngine::supports_op(IoOp) const noexcept {
+  unreachable();
+  // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
+  return false;
+}
+
+OpCapabilities RingEngine::capabilities() const noexcept {
+  unreachable();
+  // cppcheck-suppress unreachableCode ; MISRA C++ deviation (Rule 0.0.1): defensive return after unreachable()
+  return OpCapabilities{};
+}
 
 std::uint64_t RingEngine::count_operations(OperationState) const {
   unreachable();

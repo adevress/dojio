@@ -31,6 +31,26 @@ applications on Linux, by:
 - Focus on a "never blocking" API appropriate for high performance server or Fiber based io framework
 - Architecture "Zero sharing" (One RingEngine per thread, and message passing between thread)
 
+### Processing modes
+
+`RingEngine::process()` selects how the queued operations are driven:
+
+| Mode | Behavior |
+| ---- | -------- |
+| `Batch` | Process every queued operation (ring and inline, including the ones chained from callbacks) until none is left. |
+| `Forever` | Like `Batch`, but returns early when `request_stop()` is called. |
+| `NonBlocking` | Submit the queued operations and dispatch only the completions that are already ready; never blocks. |
+| `WaitOnce` | Submit, then wait for at least one completion when operations are still pending, dispatch the ready ones and return. |
+
+For fiber or event-loop schedulers, `RingEngine::poll()` is a convenience wrapper around the
+`NonBlocking` path that returns the number of callbacks dispatched (inline + ring), so the caller can
+yield or park the fiber when it returns zero.
+
+Opcode availability is discovered from the running kernel with `IORING_REGISTER_PROBE` (rather than
+`uname(2)` sniffing): `RingEngine::supports_op()` reports whether a given io_uring opcode is exposed,
+and the syscall-backed operations (`bind`/`listen`, `ftruncate`, `pipe`) transparently fall back to
+their synchronous syscall when it is not.
+
 ## Compilation instructions
 
 ### Requirements

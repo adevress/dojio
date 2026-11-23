@@ -28,7 +28,7 @@
 #include <vector>
 
 #if DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
-#include <dojio/action.hpp>
+#include <dojio/debug.hpp>
 #include <dojio/ring.hpp>
 
 #include <fcntl.h>
@@ -55,8 +55,9 @@ std::uint64_t read_page_size() {
 
 #if DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
 
-// syscall(2) returns long (C API boundary): narrowed to the raw io_uring_register(2)
-// result, which is 0 on success and the negated errno on failure.
+// syscall(2) returns long (C API boundary). The libc wrapper normalizes the io_uring
+// convention (a negative errno as the raw return) to -1 and stores the real error code
+// in errno: callers must read errno instead of negating the return value.
 std::int32_t sys_io_uring_register(std::int32_t ring_fd, std::uint32_t opcode, const void* arg, std::uint32_t nr_args) {
   enforce_precondition(ring_fd >= 0);
   return static_cast<std::int32_t>(::syscall(__NR_io_uring_register, ring_fd, opcode, arg, nr_args));
@@ -72,10 +73,6 @@ std::int32_t register_buffers(std::int32_t ring_fd, const iovec* iovecs, std::ui
 std::int32_t unregister_buffers(std::int32_t ring_fd) {
   return sys_io_uring_register(ring_fd, IORING_UNREGISTER_BUFFERS, nullptr, 0);
 }
-
-/// True when the running kernel exposes the io_uring fixed-buffer table: io_uring
-/// appeared in Linux 5.1.
-bool registration_enabled() { return detail::kernel_supports_io_uring(); }
 
 #endif // DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
 
@@ -214,22 +211,22 @@ RegisteredMemoryPool::create(detail::IoUring& ring, std::uint64_t buffer_size, s
   // mmap'ed memory and never touches the ring
   std::int32_t ring_fd = -1;
 #if DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
-  if (registration_enabled()) {
-    // the pool owns its own close-on-exec reference on the io_uring instance: the pool
-    // (and the fixed buffers registered on it) stays usable even if the ring object is
-    // destroyed first, and closing the duplicate in the destructor drops that reference
-    ring_fd = static_cast<std::int32_t>(::fcntl(ring.fd(), F_DUPFD_CLOEXEC, 0));
-    if (ring_fd < 0) {
-      // errno is only valid right after the failing call: capture it before formatting
-      const std::int32_t err = static_cast<std::int32_t>(errno);
-      return tl::unexpected(
-          DojioError{ErrorOpcode::MemoryPoolRingFd,
-                     fmt::format("dojio: RegisteredMemoryPool fcntl(F_DUPFD_CLOEXEC, ring_fd={}) failed: {}", ring.fd(),
-                                 std::error_code(err, std::generic_category()).message())});
-    }
+  // the ring exists (io_uring is available by construction), so the fixed-buffer
+  // table is there: register the chunks. The pool owns its own close-on-exec
+  // reference on the io_uring instance, so the fixed buffers stay registered even
+  // if the ring object is destroyed first, and closing the duplicate in the
+  // destructor drops that reference.
+  ring_fd = static_cast<std::int32_t>(::fcntl(ring.fd(), F_DUPFD_CLOEXEC, 0));
+  if (ring_fd < 0) {
+    // errno is only valid right after the failing call: capture it before formatting
+    const std::int32_t err = static_cast<std::int32_t>(errno);
+    return tl::unexpected(
+        DojioError{ErrorOpcode::MemoryPoolRingFd,
+                   fmt::format("dojio: RegisteredMemoryPool fcntl(F_DUPFD_CLOEXEC, ring_fd={}) failed: {}", ring.fd(),
+                               std::error_code(err, std::generic_category()).message())});
   }
 #else
-  // no io_uring fixed-buffer table on this platform / kernel: the ring is not used
+  // no io_uring fixed-buffer table on this platform: the ring is not used
   static_cast<void>(ring);
 #endif
 
@@ -258,14 +255,29 @@ RegisteredMemoryPool::create(detail::IoUring& ring, std::uint64_t buffer_size, s
     }
     const std::int32_t ret = register_buffers(ring_fd, iovecs.data(), static_cast<std::uint32_t>(count));
     if (ret != 0) {
-      const std::int32_t err = -ret;
-      // the registration failed: undo the mapping and drop the duplicated fd
-      static_cast<void>(::munmap(memory, static_cast<std::size_t>(mapped_size)));
-      static_cast<void>(::close(ring_fd));
-      return tl::unexpected(
-          DojioError{ErrorOpcode::MemoryPoolRegisterBuffers,
-                     fmt::format("dojio: io_uring_register(IORING_REGISTER_BUFFERS, nr={}) failed: {}", count,
-                                 std::error_code(err, std::generic_category()).message())});
+      // the libc syscall() wrapper leaves the real error code in errno: capture it
+      // before the cleanup calls below overwrite it
+      const std::int32_t err = static_cast<std::int32_t>(errno);
+      if (err == EPERM) {
+        // the sandbox / LSM refused the registration (e.g. a seccomp profile that
+        // blocks io_uring_register). Do not fail: the pool is still usable as plain
+        // mmap'ed memory. Log the downgrade, drop the duplicated ring fd (ring_fd = -1
+        // makes the implementation skip the unregister/close in its destructor) and
+        // continue without registered buffers.
+        detail::dojio_debug("dojio: io_uring_register(IORING_REGISTER_BUFFERS, nr={}) not permitted; continuing "
+                            "without registered buffers\n",
+                            count);
+        static_cast<void>(::close(ring_fd));
+        ring_fd = -1;
+      } else {
+        // the registration failed: undo the mapping and drop the duplicated fd
+        static_cast<void>(::munmap(memory, static_cast<std::size_t>(mapped_size)));
+        static_cast<void>(::close(ring_fd));
+        return tl::unexpected(
+            DojioError{ErrorOpcode::MemoryPoolRegisterBuffers,
+                       fmt::format("dojio: io_uring_register(IORING_REGISTER_BUFFERS, nr={}) failed: {}", count,
+                                   std::error_code(err, std::generic_category()).message())});
+      }
     }
   }
 #endif

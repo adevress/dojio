@@ -47,6 +47,19 @@ struct Sqe {
   std::uint16_t buf_index = 0; // fixed buffer index for READ_FIXED / WRITE_FIXED
 };
 
+/// The opcodes of the syscall-backed operations the running kernel actually
+/// exposes, discovered with IORING_REGISTER_PROBE (io_uring_register(2)).
+///
+/// Enterprise / LTS kernels backport opcodes and io_uring restrictions can hide
+/// them, so this is queried once when the ring is created instead of guessing
+/// from the kernel version. A capability left false makes the matching operation
+/// fall back to its synchronous syscall.
+struct OpCapabilities {
+  bool bind_listen = false; ///< IORING_OP_BIND / IORING_OP_LISTEN
+  bool ftruncate = false;   ///< IORING_OP_FTRUNCATE
+  bool pipe = false;        ///< IORING_OP_PIPE
+};
+
 /// AT_FDCWD (stable kernel uapi value).
 inline constexpr std::int32_t k_at_fdcwd = -100;
 /// AT_EMPTY_PATH (stable kernel uapi value), used for the Fstat operation.

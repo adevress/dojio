@@ -33,12 +33,11 @@ class RegisteredBuffer;
 /// Memory pool of io_uring registered buffers.
 ///
 /// The backing memory is allocated as whole pages with mmap() and distributed in
-/// chunks. On Linux with a kernel exposing io_uring (5.1+), every chunk is registered
-/// once with the io_uring instance (IORING_REGISTER_BUFFERS), so read/write operations
-/// submitted with it take the zero-copy READ_FIXED/WRITE_FIXED path (no per-operation
-/// page pinning). On other platforms, or with a kernel without io_uring, the pool
-/// maps the same chunks but performs no registration and ignores the ring: the chunks
-/// are then plain mmap'ed memory.
+/// chunks. On Linux every chunk is registered once with the io_uring instance
+/// (IORING_REGISTER_BUFFERS), so read/write operations submitted with it take the
+/// zero-copy READ_FIXED/WRITE_FIXED path (no per-operation page pinning). On
+/// non-Linux platforms (no io_uring), the pool maps the same chunks but performs no
+/// registration and ignores the ring: the chunks are then plain mmap'ed memory.
 ///
 /// create() duplicates the ring file descriptor (close-on-exec): the pool holds its
 /// own reference on the io_uring instance and closes it in its destructor, so the
@@ -70,8 +69,8 @@ public:
   /// Returns a DojioError (opcode + message) instead of throwing when the ring file
   /// descriptor duplication, the backing mmap(2) or the io_uring fixed-buffer
   /// registration fails. Nothing is left registered on the ring in that case.
-  /// The ring file descriptor duplication and the registration are skipped (and
-  /// cannot fail) when the platform or the running kernel has no io_uring support.
+  /// On non-Linux platforms the ring file descriptor duplication and the
+  /// registration are skipped (and cannot fail).
   static tl::expected<RegisteredMemoryPool, DojioError> create(detail::IoUring& ring, std::uint64_t buffer_size,
                                                                std::uint64_t count);
 
