@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <thread>
 #include <variant>
 
 #include <dojio/result.hpp>
@@ -166,6 +167,91 @@ TEST_CASE("process(Batch) with nothing pending is a no-op") {
   engine->process(dojio::RingEngine::ProcessMode::Batch);
   CHECK(engine->count_operations(dojio::RingEngine::OperationState::Pending) == 0);
   CHECK(engine->count_operations(dojio::RingEngine::OperationState::Completed) == 0);
+}
+
+TEST_CASE("process(NonBlocking) dispatches ready completions without blocking") {
+  for (const bool sqpoll : {true, false}) {
+    CAPTURE(sqpoll);
+    auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
+    if (!ring_engine_result.has_value()) {
+      // SQPOLL is not available on this kernel / without the required privileges:
+      // the setup failure is reported as an IoUringSetup error and there is nothing more to test
+      CHECK(ring_engine_result.error().opcode == dojio::ErrorOpcode::IoUringSetup);
+      continue;
+    }
+    auto engine = std::move(ring_engine_result).value();
+    using State = dojio::RingEngine::OperationState;
+    std::int32_t done = 0;
+    engine->submit(dojio::Timer{std::chrono::milliseconds(50)},
+                   [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                     CHECK(r.has_value());
+                     done += 1;
+                   });
+    // the 50 ms timer cannot have fired yet: NonBlocking returns immediately and
+    // leaves the operation pending
+    const auto start = std::chrono::steady_clock::now();
+    engine->process(dojio::RingEngine::ProcessMode::NonBlocking);
+    CHECK(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(10));
+    CHECK(done == 0);
+    CHECK(engine->count_operations(State::Pending) == 1);
+    CHECK(engine->count_operations(State::Completed) == 0);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    engine->process(dojio::RingEngine::ProcessMode::NonBlocking);
+    CHECK(done == 1);
+    CHECK(engine->count_operations(State::Pending) == 0);
+    CHECK(engine->count_operations(State::Completed) == 1);
+  }
+}
+
+TEST_CASE("process(WaitOnce) returns after dispatching one completion") {
+  auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
+  using State = dojio::RingEngine::OperationState;
+  std::int32_t done = 0;
+  engine->submit(dojio::Timer{std::chrono::milliseconds(5)},
+                 [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                   CHECK(r.has_value());
+                   done += 1;
+                 });
+  const dojio::OperationId long_id = engine->submit(
+      dojio::Timer{std::chrono::seconds(30)}, [](dojio::Result<std::monostate>, dojio::OperationId, std::int32_t) {});
+  // WaitOnce blocks at most until the 5 ms timer fires, not until the 30 s one
+  const auto start = std::chrono::steady_clock::now();
+  engine->process(dojio::RingEngine::ProcessMode::WaitOnce);
+  CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds(1));
+  CHECK(done == 1);
+  CHECK(engine->count_operations(State::Completed) == 1);
+  CHECK(engine->count_operations(State::Pending) == 1);
+  // the 30 s timer is still in flight: cancel it and drain the cancellation
+  CHECK(engine->cancel(long_id));
+  engine->process(dojio::RingEngine::ProcessMode::Batch);
+  CHECK(engine->count_operations(State::Pending) == 0);
+  CHECK(engine->count_operations(State::Failed) == 1);
+}
+
+TEST_CASE("poll() returns the number of dispatched callbacks") {
+  auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
+  std::int32_t done = 0;
+  engine->submit(dojio::Timer{std::chrono::milliseconds(1)},
+                 [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                   CHECK(r.has_value());
+                   done += 1;
+                 });
+  std::uint64_t dispatched = 0;
+  for (std::int32_t attempt = 0; attempt < 100 && dispatched == 0; ++attempt) {
+    dispatched = engine->poll();
+    if (dispatched == 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+  CHECK(dispatched == 1);
+  CHECK(done == 1);
+  // nothing left to dispatch
+  CHECK(engine->poll() == 0);
 }
 
 TEST_CASE("callbacks may submit new operations from the completion handler") {

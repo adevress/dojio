@@ -157,3 +157,39 @@ TEST_CASE("DOJIO_FORCE_LINUX_OLD_KERNEL runs ftruncate and pipe through the sync
     ::unlink(path.c_str());
   }
 }
+
+TEST_CASE("Batch runs inline operations chained from a completion callback") {
+  for (const bool sqpoll : {true, false}) {
+    CAPTURE(sqpoll);
+    auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});
+    REQUIRE(ring_engine_result.has_value());
+    auto engine = std::move(ring_engine_result).value();
+    using State = dojio::RingEngine::OperationState;
+    using Mode = dojio::RingEngine::ProcessMode;
+    const std::string path = make_tmp_file("batch_chained_inline", "0123456789");
+
+    dojio::FileDescriptor fd{-1};
+    bool truncated = false;
+    // open_at completes on the ring; its callback chains an ftruncate, which runs
+    // inline under DOJIO_FORCE_LINUX_OLD_KERNEL and must still be drained by Batch
+    engine->submit(dojio::open_at(path, O_RDWR),
+                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
+                     REQUIRE(r.has_value());
+                     fd = *r;
+                     engine->submit(dojio::ftruncate(fd, 4),
+                                    [&](dojio::Result<std::int32_t> r2, dojio::OperationId, std::int32_t res) {
+                                      REQUIRE(r2.has_value());
+                                      CHECK(res == 0);
+                                      truncated = true;
+                                    });
+                   });
+    engine->process(Mode::Batch);
+    CHECK(truncated);
+    CHECK(engine->count_operations(State::Pending) == 0);
+    CHECK(engine->count_operations(State::Failed) == 0);
+
+    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->process(Mode::Batch);
+    ::unlink(path.c_str());
+  }
+}

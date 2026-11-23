@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <memory>
 #include <memory_resource>
-#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -18,6 +17,7 @@
 #include <dojio/error.hpp>
 #include <dojio/operation_id.hpp>
 #include <dojio/operations.hpp>
+#include <dojio/slot_table.hpp>
 #include <dojio/timer.hpp>
 
 namespace dojio::detail {
@@ -63,8 +63,10 @@ class RingEngine {
 public:
   /// Selects how process() behaves.
   enum class ProcessMode : std::uint8_t {
-    Batch,  ///< submit and process the current batch of operations, then return
-    Forever ///< loop processing operations until request_stop() is called (interruption)
+    Batch,       ///< process every queued operation (ring and inline) until none is left
+    Forever,     ///< like Batch, but returns early when request_stop() is called
+    NonBlocking, ///< submit queued ops and dispatch only already-ready completions without blocking
+    WaitOnce,    ///< submit queued ops, wait for at least one completion if any are pending, dispatch and return
   };
 
   /// Selects which operations count_operations reports.
@@ -131,6 +133,14 @@ public:
   /// Processes operations according to mode.
   void process(ProcessMode mode);
 
+  /// Non-blocking convenience for fiber / event-loop schedulers: runs the inline
+  /// pending operations, submits the queued operations without waiting, dispatches
+  /// the completions that are already available and returns the number of dispatched
+  /// callbacks (inline + ring).
+  ///
+  /// A scheduler can yield or park the fiber when the returned count is zero.
+  std::uint64_t poll();
+
   /// Interrupts a process(ProcessMode::Forever) loop; checked between batches.
   void request_stop() { stop_requested_ = true; }
 
@@ -139,6 +149,15 @@ public:
 
   /// File descriptor of the underlying io_uring instance.
   [[nodiscard]] std::int32_t ring_fd() const;
+
+  /// True when the underlying ring exposes the given io_uring opcode, as reported
+  /// by IORING_REGISTER_PROBE. False when the probe could not be run or the opcode
+  /// is unavailable.
+  [[nodiscard]] bool supports_op(IoOp op) const noexcept;
+
+  /// The opcodes of the syscall-backed operations (bind/listen, ftruncate, pipe)
+  /// the underlying ring exposes; the matching operations stay inline otherwise.
+  [[nodiscard]] OpCapabilities capabilities() const noexcept;
 
   /// True when the underlying ring was created with IORING_SETUP_SQPOLL.
   [[nodiscard]] bool sqpoll_enabled() const;
@@ -156,20 +175,29 @@ private:
 
   template <typename Op, typename Buffer, typename Callback>
   OperationId do_submit(Op op, Buffer buffer, Callback callback, bool timer) {
-    const OperationId id{next_id_};
-    next_id_ += 1;
     using ActionType = Action<Op, Buffer, Callback>;
     static_assert(sizeof(ActionType) <= max_size_action,
                   "Action exceeds max_size_action: shrink the callback / buffer or raise max_size_action");
-    std::pmr::polymorphic_allocator<ActionType> allocator{action_pool_};
-    auto action = BoxPtr<ActionType>::make(allocator, id, std::move(op), std::move(buffer), std::move(callback), timer);
-    if (!action->is_inline()) {
-      // fill the SQE mirror now; the RingEngine copies it onto the kernel ring at flush
-      action->fill();
-      action->sqe().user_data = id.value;
-      in_flight_ += 1;
+    // reserve the id first so the Action can be constructed with it; release the
+    // slot if the allocation / construction throws
+    const OperationId id = pending_.reserve_id();
+    try {
+      std::pmr::polymorphic_allocator<ActionType> allocator{action_pool_};
+      auto action = BoxPtr<ActionType>::make(allocator, id, std::move(op), std::move(buffer), std::move(callback),
+                                             timer, capabilities_);
+      if (action->is_inline()) {
+        inline_pending_.push_back(id);
+      } else {
+        // fill the SQE mirror now; the RingEngine copies it onto the kernel ring at flush
+        action->fill();
+        action->sqe().user_data = id.value;
+        unsubmitted_.push_back(id);
+      }
+      pending_.assign(id, std::move(action));
+    } catch (...) {
+      pending_.erase(id);
+      throw;
     }
-    pending_.emplace(id.value, std::move(action));
     return id;
   }
 
@@ -177,11 +205,13 @@ private:
   /// when min_complete > 0, also waits for at least that many completions.
   void flush(std::uint32_t min_complete);
   /// Executes the operations dispatched inline at submission time (a syscall-backed
-  /// operation on a kernel that does not expose its io_uring opcode) and dispatches them.
-  void run_inline_pending();
-  /// Reaps every available completion and dispatches it.
-  void reap_and_dispatch();
-  void dispatch(std::uint64_t id, std::int32_t res);
+  /// operation whose io_uring opcode the ring does not expose) and dispatches them.
+  /// Returns the number of callbacks dispatched.
+  std::uint64_t run_inline_pending();
+  /// Reaps every available completion and dispatches it. Returns the number of
+  /// callbacks dispatched.
+  std::uint64_t reap_and_dispatch();
+  void dispatch(OperationId id, std::int32_t res);
   void finish(ActionBase& action, std::int32_t res);
   /// io_uring_enter with EINTR retry; any other error is a contract failure.
   std::int32_t enter_wait(std::uint32_t to_submit, std::uint32_t min_complete);
@@ -191,18 +221,27 @@ private:
 
   // pimpl: the io_uring ring lives in the library
   std::unique_ptr<detail::IoUring> ring_;
+  // opcodes the ring exposes, probed once at construction and passed to every
+  // Action so compute_inline() stays a pure function of the operation
+  OpCapabilities capabilities_{};
   // pool owned by the ring, used to allocate the Action objects (actions are made
   // with BoxPtr so the allocation size follows the concrete Action type)
   std::pmr::unsynchronized_pool_resource* action_pool_ = nullptr;
-  std::pmr::unsynchronized_pool_resource pool_resource_;
-  std::pmr::unordered_map<std::uint64_t, BoxPtr<ActionBase>> pending_;
+  // pending operations, addressed by their OperationId (O(1) index + generation)
+  detail::SlotTable<BoxPtr<ActionBase>> pending_;
+  // Work queues of the operation ids that still need a ring submission
+  // (unsubmitted_) or an inline execution (inline_pending_). They keep flush() and
+  // run_inline_pending() proportional to the new operations, not to the whole
+  // pending set. inline_scratch_ lets run_inline_pending() detach the queue so the
+  // completion callbacks can submit new inline operations safely.
+  std::vector<OperationId> unsubmitted_;
+  std::vector<OperationId> inline_pending_;
+  std::vector<OperationId> inline_scratch_;
   // Scratch buffer for the dispatch loops, preallocated once from the ring
   // size in the constructor so run_inline_pending()/reap_and_dispatch() never
   // reallocate on the hot path. Both loops extract the completed actions from
   // pending_ into it before running the completion handlers.
   std::vector<std::pair<BoxPtr<ActionBase>, std::int32_t>> done_;
-  std::uint64_t next_id_ = 1;
-  std::uint64_t in_flight_ = 0;
   std::uint64_t completed_ = 0;
   std::uint64_t failed_ = 0;
   bool stop_requested_ = false;

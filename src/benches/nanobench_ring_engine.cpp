@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -50,6 +51,20 @@ int main() {
   ankerl::nanobench::Bench bench;
   bench.title("dojio ring engine").unit("op").warmup(2);
 
+  // dedicated engine for the pending-set scan benchmark: 1024 long-lived timers
+  // are submitted once and stay pending while each timed iteration adds 64 reads
+  auto idle_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 2048});
+  if (!idle_engine_result.has_value()) {
+    throw std::runtime_error(idle_engine_result.error().message);
+  }
+  auto idle_engine = std::move(idle_engine_result).value();
+  constexpr std::int32_t k_idle_timers = 1024;
+  for (std::int32_t i = 0; i < k_idle_timers; ++i) {
+    idle_engine->submit(dojio::Timer{std::chrono::seconds(60)},
+                        [](dojio::Result<std::monostate>, dojio::OperationId, std::int32_t) {});
+  }
+  idle_engine->process(dojio::RingEngine::ProcessMode::NonBlocking);
+
   bench.run("preads 64x4KB + process(Batch)", [&] {
     for (std::int32_t i = 0; i < k_batch; ++i) {
       engine->submit(dojio::pread(dojio::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk),
@@ -88,6 +103,19 @@ int main() {
     }
     engine->process(dojio::RingEngine::ProcessMode::Batch);
     ankerl::nanobench::doNotOptimizeAway(fds.size());
+  });
+
+  bench.run("1024 idle timers + 64 preads", [&] {
+    for (std::int32_t i = 0; i < k_batch; ++i) {
+      idle_engine->submit(dojio::pread(dojio::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk),
+                          std::vector<std::byte>(static_cast<std::size_t>(k_chunk)),
+                          [](dojio::Result<std::vector<std::byte>>, dojio::OperationId, std::int32_t) {});
+    }
+    while (idle_engine->count_operations(dojio::RingEngine::OperationState::Pending) >
+           static_cast<std::uint64_t>(k_idle_timers)) {
+      idle_engine->process(dojio::RingEngine::ProcessMode::WaitOnce);
+    }
+    ankerl::nanobench::doNotOptimizeAway(idle_engine->count_operations(dojio::RingEngine::OperationState::Completed));
   });
 
   bench.run("timer submit + cancel + process", [&] {

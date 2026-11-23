@@ -8,6 +8,8 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <cstring>
@@ -28,6 +30,23 @@ long sys_io_uring_setup(std::uint32_t entries, io_uring_params* params) {
 long sys_io_uring_enter(std::int32_t fd, std::uint32_t to_submit, std::uint32_t min_complete, std::uint32_t flags) {
   return ::syscall(__NR_io_uring_enter, fd, to_submit, min_complete, flags, nullptr, 0);
 }
+
+long sys_io_uring_register(std::int32_t fd, std::uint32_t opcode, const void* arg, std::uint32_t nr_args) {
+  return ::syscall(__NR_io_uring_register, fd, opcode, arg, nr_args);
+}
+
+/// Upper bound on the number of opcodes IORING_REGISTER_PROBE reports.
+inline constexpr std::uint32_t k_max_probe_ops = 256;
+
+/// Storage for the IORING_REGISTER_PROBE answer: a struct io_uring_probe header
+/// immediately followed by up to k_max_probe_ops io_uring_probe_op entries. The uapi
+/// header ends in a flexible array member, so the two views cannot be members of the
+/// same struct; the storage is an aligned byte buffer interpreted as the header and
+/// then the entries at offset sizeof(io_uring_probe).
+struct ProbeBuffer {
+  alignas(io_uring_probe)
+      std::array<std::byte, sizeof(io_uring_probe) + (sizeof(io_uring_probe_op) * k_max_probe_ops)> bytes{};
+};
 
 void* map_ring(std::int32_t fd, std::uint64_t size, std::uint64_t offset) {
   // mmap takes a size_t length (C ABI boundary)
@@ -100,7 +119,39 @@ tl::expected<void, DojioError> IoUring::setup(std::uint32_t entries, std::uint32
   cq_head_ = uring_cast<std::uint32_t*>(cq_base + params_.cq_off.head);
   cq_tail_ = uring_cast<std::uint32_t*>(cq_base + params_.cq_off.tail);
   cqes_ = uring_cast<io_uring_cqe*>(cq_base + params_.cq_off.cqes);
+  probe_opcodes();
   return {};
+}
+
+void IoUring::probe_opcodes() {
+  ProbeBuffer probe{};
+  const long rc = sys_io_uring_register(fd_, IORING_REGISTER_PROBE, probe.bytes.data(), k_max_probe_ops);
+  if (rc != 0) {
+    return;
+  }
+  auto* header = uring_cast<io_uring_probe*>(probe.bytes.data());
+  auto* ops = uring_cast<io_uring_probe_op*>(probe.bytes.data() + sizeof(io_uring_probe));
+  const std::uint32_t count =
+      std::min<std::uint32_t>(static_cast<std::uint32_t>(header->last_op) + 1U, k_max_probe_ops);
+  for (std::uint32_t i = 0; i < count; ++i) {
+    if ((ops[i].flags & IO_URING_OP_SUPPORTED) != 0U) {
+      supported_ops_[ops[i].op] = true;
+    }
+  }
+}
+
+bool IoUring::supports_op(IoOp op) const noexcept { return supported_ops_[static_cast<std::uint8_t>(op)]; }
+
+OpCapabilities IoUring::capabilities() const noexcept {
+  OpCapabilities capabilities{};
+  capabilities.bind_listen = supports_op(IoOp::Bind) && supports_op(IoOp::Listen);
+  capabilities.ftruncate = supports_op(IoOp::Ftruncate);
+  capabilities.pipe = supports_op(IoOp::Pipe);
+  return capabilities;
+}
+
+bool IoUring::cq_overflow() const noexcept {
+  return (std::atomic_ref<std::uint32_t>(*sq_flags_).load(std::memory_order_acquire) & IORING_SQ_CQ_OVERFLOW) != 0;
 }
 
 IoUring::~IoUring() {
@@ -163,20 +214,6 @@ bool IoUring::sqpoll_needs_wakeup() const {
 }
 
 std::int32_t IoUring::wake_sqpoll() { return enter(0, 0, IORING_ENTER_SQ_WAKEUP); }
-
-const io_uring_cqe* IoUring::peek_cqe() const {
-  const std::uint32_t head = std::atomic_ref<std::uint32_t>(*cq_head_).load(std::memory_order_acquire);
-  const std::uint32_t tail = std::atomic_ref<std::uint32_t>(*cq_tail_).load(std::memory_order_acquire);
-  if (head == tail) {
-    return nullptr;
-  }
-  return &cqes_[head & cq_mask_];
-}
-
-void IoUring::cq_advance(std::uint32_t n) {
-  const std::uint32_t head = std::atomic_ref<std::uint32_t>(*cq_head_).load(std::memory_order_acquire);
-  std::atomic_ref<std::uint32_t>(*cq_head_).store(head + n, std::memory_order_release);
-}
 
 void copy_sqe(io_uring_sqe& dst, const Sqe& src) {
   // cppcheck-suppress misra-cpp-2023-21.2.2 ; MISRA C++ deviation: memset zeroes the kernel SQE (sizeof-bounded)

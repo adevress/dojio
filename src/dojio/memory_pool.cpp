@@ -28,7 +28,6 @@
 #include <vector>
 
 #if DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
-#include <dojio/action.hpp>
 #include <dojio/ring.hpp>
 
 #include <fcntl.h>
@@ -72,10 +71,6 @@ std::int32_t register_buffers(std::int32_t ring_fd, const iovec* iovecs, std::ui
 std::int32_t unregister_buffers(std::int32_t ring_fd) {
   return sys_io_uring_register(ring_fd, IORING_UNREGISTER_BUFFERS, nullptr, 0);
 }
-
-/// True when the running kernel exposes the io_uring fixed-buffer table: io_uring
-/// appeared in Linux 5.1.
-bool registration_enabled() { return detail::kernel_supports_io_uring(); }
 
 #endif // DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
 
@@ -214,22 +209,22 @@ RegisteredMemoryPool::create(detail::IoUring& ring, std::uint64_t buffer_size, s
   // mmap'ed memory and never touches the ring
   std::int32_t ring_fd = -1;
 #if DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
-  if (registration_enabled()) {
-    // the pool owns its own close-on-exec reference on the io_uring instance: the pool
-    // (and the fixed buffers registered on it) stays usable even if the ring object is
-    // destroyed first, and closing the duplicate in the destructor drops that reference
-    ring_fd = static_cast<std::int32_t>(::fcntl(ring.fd(), F_DUPFD_CLOEXEC, 0));
-    if (ring_fd < 0) {
-      // errno is only valid right after the failing call: capture it before formatting
-      const std::int32_t err = static_cast<std::int32_t>(errno);
-      return tl::unexpected(
-          DojioError{ErrorOpcode::MemoryPoolRingFd,
-                     fmt::format("dojio: RegisteredMemoryPool fcntl(F_DUPFD_CLOEXEC, ring_fd={}) failed: {}", ring.fd(),
-                                 std::error_code(err, std::generic_category()).message())});
-    }
+  // the ring exists (io_uring is available by construction), so the fixed-buffer
+  // table is there: register the chunks. The pool owns its own close-on-exec
+  // reference on the io_uring instance, so the fixed buffers stay registered even
+  // if the ring object is destroyed first, and closing the duplicate in the
+  // destructor drops that reference.
+  ring_fd = static_cast<std::int32_t>(::fcntl(ring.fd(), F_DUPFD_CLOEXEC, 0));
+  if (ring_fd < 0) {
+    // errno is only valid right after the failing call: capture it before formatting
+    const std::int32_t err = static_cast<std::int32_t>(errno);
+    return tl::unexpected(
+        DojioError{ErrorOpcode::MemoryPoolRingFd,
+                   fmt::format("dojio: RegisteredMemoryPool fcntl(F_DUPFD_CLOEXEC, ring_fd={}) failed: {}", ring.fd(),
+                               std::error_code(err, std::generic_category()).message())});
   }
 #else
-  // no io_uring fixed-buffer table on this platform / kernel: the ring is not used
+  // no io_uring fixed-buffer table on this platform: the ring is not used
   static_cast<void>(ring);
 #endif
 

@@ -4,11 +4,14 @@
 // (which registers the pool chunks as fixed buffers). None of these types may leak
 // into include/dojio/.
 
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <linux/io_uring.h>
 #include <memory>
 #include <memory_resource>
+#include <utility>
 
 #include <tl/expected.hpp>
 
@@ -68,6 +71,20 @@ public:
   [[nodiscard]] std::uint32_t sq_entries() const { return params_.sq_entries; }
   [[nodiscard]] std::uint32_t cq_entries() const { return params_.cq_entries; }
 
+  /// True when the running kernel exposes the given io_uring opcode, as reported
+  /// by IORING_REGISTER_PROBE when the ring was created. False when the probe
+  /// could not be run (older kernels) or the opcode is unavailable.
+  [[nodiscard]] bool supports_op(IoOp op) const noexcept;
+
+  /// The opcodes of the syscall-backed operations (bind/listen, ftruncate, pipe)
+  /// the running kernel exposes; the matching operations stay inline otherwise.
+  [[nodiscard]] OpCapabilities capabilities() const noexcept;
+
+  /// True when the completion queue overflowed (IORING_SQ_CQ_OVERFLOW): the next
+  /// io_uring_enter(2) must pass IORING_ENTER_GETEVENTS to flush the overflowed
+  /// completions into the CQ ring.
+  [[nodiscard]] bool cq_overflow() const noexcept;
+
   /// Pool owned by the ring and used by the RingEngine to allocate its Action
   /// objects. Its largest_required_pool_block is max_size_action and its
   /// max_blocks_per_chunk is the ring size (RingEngineOptions::entries).
@@ -91,11 +108,25 @@ public:
   /// io_uring_enter(2) wrapper.
   std::int32_t enter(std::uint32_t to_submit, std::uint32_t min_complete, std::uint32_t flags);
 
-  /// Returns the next completion event, or nullptr when the completion queue is empty.
-  [[nodiscard]] const io_uring_cqe* peek_cqe() const;
-
-  /// Marks n completion events as consumed by the application.
-  void cq_advance(std::uint32_t n = 1);
+  /// Consumes every completion event currently in the ring, invoking fn(user_data,
+  /// res, flags) for each, and advances the completion queue head once per batch
+  /// (a single release store instead of one per completion). Returns the number of
+  /// completions consumed. fn must not advance the CQ head itself.
+  template <typename Fn> std::uint32_t drain_cqes(Fn&& fn) {
+    std::uint32_t head = std::atomic_ref<std::uint32_t>(*cq_head_).load(std::memory_order_relaxed);
+    const std::uint32_t tail = std::atomic_ref<std::uint32_t>(*cq_tail_).load(std::memory_order_acquire);
+    std::uint32_t count = 0;
+    while (head != tail) {
+      const io_uring_cqe& cqe = cqes_[head & cq_mask_];
+      fn(cqe.user_data, cqe.res, cqe.flags);
+      head += 1;
+      count += 1;
+    }
+    if (count > 0) {
+      std::atomic_ref<std::uint32_t>(*cq_head_).store(head, std::memory_order_release);
+    }
+    return count;
+  }
 
 private:
   explicit IoUring(std::pmr::pool_options action_pool_options);
@@ -105,6 +136,11 @@ private:
   /// state (fd_ may be set while the mappings are not).
   tl::expected<void, DojioError> setup(std::uint32_t entries, std::uint32_t setup_flags,
                                        std::uint32_t sq_thread_idle_ms);
+
+  /// Queries IORING_REGISTER_PROBE and fills supported_ops_. Best effort: when the
+  /// kernel does not implement the probe (pre-5.6) or the call fails, no opcode is
+  /// marked as supported and the syscall-backed operations fall back inline.
+  void probe_opcodes();
 
   // the action pool is declared first so it is destroyed last: the BoxPtrs of the
   // RingEngine pending map may deallocate into it while the engine is torn down
@@ -126,6 +162,7 @@ private:
   io_uring_cqe* cqes_ = nullptr;
   std::uint32_t sq_mask_ = 0;
   std::uint32_t cq_mask_ = 0;
+  std::array<bool, 256> supported_ops_{};
 };
 
 } // namespace dojio::detail
