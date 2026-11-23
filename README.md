@@ -9,7 +9,6 @@
 [![format](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=nix-format%20check&label=format)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
 [![asan](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=address%20sanitizer%20build%20%2B%20tests&label=asan)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
 [![ubsan](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=undefined%20sanitizer%20build%20%2B%20tests&label=ubsan)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
-[![msan](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=memory%20sanitizer%20build%20%2B%20tests&label=msan)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
 
 ## Summary
 

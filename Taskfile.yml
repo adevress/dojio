@@ -6,9 +6,6 @@ vars:
   NIXPKGS_REV: 5646423bfac84ec68dfc60f2a322e627ef0d6a95
   NIXPKGS_CLANG_TOOLS: clang-tools_18
   NIXPKGS_URI: github:NixOS/nixpkgs/{{.NIXPKGS_REV}}#{{.NIXPKGS_CLANG_TOOLS}}
-  # Nixpkgs 24.11 revision (LLVM 19, whose libc++ provides std::atomic_ref) used
-  # by the MemorySanitizer build.
-  NIXPKGS_SANITIZER_REV: 50ab793786d9de88ee30ec4e4c24fb4236fc2674
   # Enable nix flakes through the native NIX_CONFIG env var (set in the
   # nix-* tasks' env block).
   NIX_CONFIG: 'experimental-features = nix-command flakes'
@@ -46,7 +43,6 @@ tasks:
     env:
       NIX_CONFIG: '{{.NIX_CONFIG}}'
       NIXPKGS_REV: '{{.NIXPKGS_REV}}'
-      NIXPKGS_SANITIZER_REV: '{{.NIXPKGS_SANITIZER_REV}}'
     cmds:
       - bash ./scripts/run-sanitizer.sh address
 
@@ -55,18 +51,8 @@ tasks:
     env:
       NIX_CONFIG: '{{.NIX_CONFIG}}'
       NIXPKGS_REV: '{{.NIXPKGS_REV}}'
-      NIXPKGS_SANITIZER_REV: '{{.NIXPKGS_SANITIZER_REV}}'
     cmds:
       - bash ./scripts/run-sanitizer.sh undefined
-
-  nix-sanitizer-memory:
-    desc: Configure, build and test with MemorySanitizer via nix
-    env:
-      NIX_CONFIG: '{{.NIX_CONFIG}}'
-      NIXPKGS_REV: '{{.NIXPKGS_REV}}'
-      NIXPKGS_SANITIZER_REV: '{{.NIXPKGS_SANITIZER_REV}}'
-    cmds:
-      - bash ./scripts/run-sanitizer.sh memory
 
   # Convenience aggregate: runs every sanitizer task.
   nix-sanitizers:
@@ -74,7 +60,6 @@ tasks:
     cmds:
       - task: nix-sanitizer-address
       - task: nix-sanitizer-undefined
-      - task: nix-sanitizer-memory
 
   coverage:
     cmds:

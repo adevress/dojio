@@ -97,20 +97,3 @@ jobs:
         run: |
           nix shell "github:NixOS/nixpkgs/${{ env.NIXPKGS_REV }}#go-task" \
             --command task nix-sanitizer-undefined
-
-  # (6) build and run the tests under MemorySanitizer. MemorySanitizer needs
-  # every dependency (including the C++ standard library) to be instrumented;
-  # nixpkgs only ships an uninstrumented libc++, so this job is expected to
-  # report false positives inside libc++ and is kept non-blocking until an
-  # MSan-instrumented libc++ is available.
-  sanitizer-memory:
-    name: memory sanitizer build + tests
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v6
-      - uses: cachix/install-nix-action@v31
-      - name: Configure, build and test with MemorySanitizer
-        run: |
-          nix shell "github:NixOS/nixpkgs/${{ env.NIXPKGS_REV }}#go-task" \
-            --command task nix-sanitizer-memory
