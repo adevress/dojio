@@ -82,6 +82,7 @@ TEST_CASE("extract_os_version caches the kernel version and drives the dispatche
 #if defined(__linux__)
   CHECK(version.major > 0);
   // the capability queries follow the kernel version thresholds
+  CHECK(dojio::detail::kernel_supports_io_uring() == (version.major > 5 || (version.major == 5 && version.minor >= 1)));
   CHECK(dojio::detail::kernel_supports_bind_listen() ==
         (version.major > 6 || (version.major == 6 && version.minor >= 11)));
   CHECK(dojio::detail::kernel_supports_ftruncate() ==
@@ -89,6 +90,7 @@ TEST_CASE("extract_os_version caches the kernel version and drives the dispatche
   CHECK(dojio::detail::kernel_supports_pipe() == (version.major > 6 || (version.major == 6 && version.minor >= 16)));
 #else
   CHECK(version.major == 0);
+  CHECK_FALSE(dojio::detail::kernel_supports_io_uring());
   CHECK_FALSE(dojio::detail::kernel_supports_bind_listen());
   CHECK_FALSE(dojio::detail::kernel_supports_ftruncate());
   CHECK_FALSE(dojio::detail::kernel_supports_pipe());

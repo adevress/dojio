@@ -109,12 +109,8 @@ std::chrono::nanoseconds run_serial(const std::filesystem::path& directory,
 /// wall-clock time.
 std::chrono::nanoseconds run_async(const std::filesystem::path& directory,
                                    std::vector<std::vector<std::byte>>& buffers) {
-  auto engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 256});
-  if (!engine_result.has_value()) {
-    fmt::print(stderr, "async: ring engine: {}\n", engine_result.error().message);
-    std::exit(1);
-  }
-  auto engine = std::move(engine_result).value();
+  auto engine =
+      dojio::result_or_fail(dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 256}), "async: ring engine");
 
   std::int32_t completed = 0;
   std::int32_t failed = 0;

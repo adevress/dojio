@@ -1,32 +1,59 @@
 #include <dojio/memory_pool.hpp>
 
-#include <dojio/contracts.hpp>
-#include <dojio/ring.hpp>
+// The fixed-buffer registration only exists on Linux, where io_uring appeared in
+// kernel 5.1 (with its IORING_REGISTER_BUFFERS table). On every other platform, with
+// too old kernel headers, and in the DOJIO_FORCE_LINUX_OLD_KERNEL configuration that
+// fakes an older kernel, the pool still maps and hands out its chunks but registers
+// nothing: no ring fd is duplicated, no io_uring_register(2) call is made.
+#if defined(__linux__) && !defined(DOJIO_FORCE_LINUX_OLD_KERNEL) && __has_include(<linux/io_uring.h>)
+#define DOJIO_MEMORY_POOL_REGISTERS_BUFFERS 1
+#else
+#define DOJIO_MEMORY_POOL_REGISTERS_BUFFERS 0
+#endif
 
-#include <fcntl.h>
+#include <dojio/contracts.hpp>
+
 #include <fmt/format.h>
-#include <linux/io_uring.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
-#include <sys/uio.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <limits>
 #include <memory>
+#include <span>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#if DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
+#include <dojio/action.hpp>
+#include <dojio/ring.hpp>
+
+#include <fcntl.h>
+#include <linux/io_uring.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
+#endif
+
 namespace dojio {
 
 namespace {
+
+// Combines flag constants as unsigned values (MISRA Rule 7.0.4) and returns the result
+// as the int expected by the C API.
+template <typename... Flags> [[nodiscard]] constexpr int combine_flags(Flags... flags) noexcept {
+  return static_cast<int>((static_cast<unsigned int>(flags) | ...));
+}
 
 // sysconf(3) returns long (C API boundary); narrowed with an explicit cast.
 std::uint64_t read_page_size() {
   const auto v = ::sysconf(_SC_PAGESIZE);
   return v > 0 ? static_cast<std::uint64_t>(v) : std::uint64_t{4096};
 }
+
+#if DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
 
 // syscall(2) returns long (C API boundary): narrowed to the raw io_uring_register(2)
 // result, which is 0 on success and the negated errno on failure.
@@ -45,6 +72,12 @@ std::int32_t register_buffers(std::int32_t ring_fd, const iovec* iovecs, std::ui
 std::int32_t unregister_buffers(std::int32_t ring_fd) {
   return sys_io_uring_register(ring_fd, IORING_UNREGISTER_BUFFERS, nullptr, 0);
 }
+
+/// True when the running kernel exposes the io_uring fixed-buffer table: io_uring
+/// appeared in Linux 5.1.
+bool registration_enabled() { return detail::kernel_supports_io_uring(); }
+
+#endif // DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
 
 } // namespace
 
@@ -87,7 +120,7 @@ public:
   void release(std::uint64_t index) noexcept;
 
 private:
-  std::int32_t ring_fd_ = -1; // close-on-exec duplicate of the ring fd, closed on destruction
+  std::int32_t ring_fd_ = -1; // close-on-exec duplicate of the ring fd; -1 when not registered
   std::uint64_t buffer_size_ = 0;
   std::uint64_t chunk_size_ = 0; // cache-line aligned stride between two chunks
   std::uint64_t count_ = 0;
@@ -113,12 +146,21 @@ RegisteredMemoryPool::Impl::~Impl() {
   // (The destructor is noexcept, so the std::logic_error raised on violation turns
   // into std::terminate.)
   enforce_invariant(free_indices_.size() == static_cast<std::size_t>(count_));
+#if DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
   // the fixed buffers must be dropped before the mapping is released
-  enforce_invariant(unregister_buffers(ring_fd_) == 0);
+  // (ring_fd_ is only set when the chunks were actually registered)
+  if (ring_fd_ >= 0) {
+    enforce_invariant(unregister_buffers(ring_fd_) == 0);
+  }
+#endif
   // munmap takes a size_t length (C API boundary)
   enforce_invariant(::munmap(memory_, static_cast<std::size_t>(mapped_size_)) == 0);
+#if DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
   // last reference on the io_uring instance owned by the pool
-  enforce_invariant(::close(ring_fd_) == 0);
+  if (ring_fd_ >= 0) {
+    enforce_invariant(::close(ring_fd_) == 0);
+  }
+#endif
 }
 
 bool RegisteredMemoryPool::Impl::acquire(std::uint64_t& index) noexcept {
@@ -168,50 +210,67 @@ RegisteredMemoryPool::create(detail::IoUring& ring, std::uint64_t buffer_size, s
   enforce_precondition(total <= std::numeric_limits<std::uint64_t>::max() - (page - 1));
   const std::uint64_t mapped_size = (total + page - 1) / page * page;
 
-  // the pool owns its own close-on-exec reference on the io_uring instance: the pool
-  // (and the fixed buffers registered on it) stays usable even if the ring object is
-  // destroyed first, and closing the duplicate in the destructor drops that reference
-  const std::int32_t ring_fd = static_cast<std::int32_t>(::fcntl(ring.fd(), F_DUPFD_CLOEXEC, 0));
-  if (ring_fd < 0) {
-    // errno is only valid right after the failing call: capture it before formatting
-    const std::int32_t err = static_cast<std::int32_t>(errno);
-    return tl::unexpected(
-        DojioError{ErrorOpcode::MemoryPoolRingFd,
-                   fmt::format("dojio: RegisteredMemoryPool fcntl(F_DUPFD_CLOEXEC, ring_fd={}) failed: {}", ring.fd(),
-                               std::error_code(err, std::generic_category()).message())});
+  // ring_fd stays -1 when the chunks are not registered: the pool then only owns the
+  // mmap'ed memory and never touches the ring
+  std::int32_t ring_fd = -1;
+#if DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
+  if (registration_enabled()) {
+    // the pool owns its own close-on-exec reference on the io_uring instance: the pool
+    // (and the fixed buffers registered on it) stays usable even if the ring object is
+    // destroyed first, and closing the duplicate in the destructor drops that reference
+    ring_fd = static_cast<std::int32_t>(::fcntl(ring.fd(), F_DUPFD_CLOEXEC, 0));
+    if (ring_fd < 0) {
+      // errno is only valid right after the failing call: capture it before formatting
+      const std::int32_t err = static_cast<std::int32_t>(errno);
+      return tl::unexpected(
+          DojioError{ErrorOpcode::MemoryPoolRingFd,
+                     fmt::format("dojio: RegisteredMemoryPool fcntl(F_DUPFD_CLOEXEC, ring_fd={}) failed: {}", ring.fd(),
+                                 std::error_code(err, std::generic_category()).message())});
+    }
   }
+#else
+  // no io_uring fixed-buffer table on this platform / kernel: the ring is not used
+  static_cast<void>(ring);
+#endif
 
   // mmap takes a size_t length and an off_t offset (C API boundaries)
-  void* p = ::mmap(nullptr, static_cast<std::size_t>(mapped_size), detail::combine_flags(PROT_READ, PROT_WRITE),
-                   detail::combine_flags(MAP_PRIVATE, MAP_ANONYMOUS), -1, 0);
+  void* p = ::mmap(nullptr, static_cast<std::size_t>(mapped_size), combine_flags(PROT_READ, PROT_WRITE),
+                   combine_flags(MAP_PRIVATE, MAP_ANONYMOUS), -1, 0);
   if (p == MAP_FAILED) {
     // errno is only valid right after the failing syscall: capture it before formatting
     const std::int32_t err = static_cast<std::int32_t>(errno);
-    static_cast<void>(::close(ring_fd));
+    if (ring_fd >= 0) {
+      static_cast<void>(::close(ring_fd));
+    }
     return tl::unexpected(DojioError{ErrorOpcode::MemoryPoolMmap,
                                      fmt::format("dojio: RegisteredMemoryPool mmap(size={}) failed: {}", mapped_size,
                                                  std::error_code(err, std::generic_category()).message())});
   }
   std::byte* memory = static_cast<std::byte*>(p);
 
-  // register every chunk with the ring as a fixed buffer
-  std::vector<iovec> iovecs(static_cast<std::size_t>(count));
-  for (std::uint64_t i = 0; i < count; ++i) {
-    iovecs[static_cast<std::size_t>(i)].iov_base = memory + static_cast<std::size_t>(i * chunk_size);
-    iovecs[static_cast<std::size_t>(i)].iov_len = static_cast<std::size_t>(chunk_size);
+#if DOJIO_MEMORY_POOL_REGISTERS_BUFFERS
+  if (ring_fd >= 0) {
+    // register every chunk with the ring as a fixed buffer
+    std::vector<iovec> iovecs(static_cast<std::size_t>(count));
+    for (std::uint64_t i = 0; i < count; ++i) {
+      iovecs[static_cast<std::size_t>(i)].iov_base = memory + static_cast<std::size_t>(i * chunk_size);
+      iovecs[static_cast<std::size_t>(i)].iov_len = static_cast<std::size_t>(chunk_size);
+    }
+    const std::int32_t ret = register_buffers(ring_fd, iovecs.data(), static_cast<std::uint32_t>(count));
+    if (ret != 0) {
+      const std::int32_t err = -ret;
+      // the registration failed: undo the mapping and drop the duplicated fd
+      static_cast<void>(::munmap(memory, static_cast<std::size_t>(mapped_size)));
+      static_cast<void>(::close(ring_fd));
+      return tl::unexpected(
+          DojioError{ErrorOpcode::MemoryPoolRegisterBuffers,
+                     fmt::format("dojio: io_uring_register(IORING_REGISTER_BUFFERS, nr={}) failed: {}", count,
+                                 std::error_code(err, std::generic_category()).message())});
+    }
   }
-  const std::int32_t ret = register_buffers(ring_fd, iovecs.data(), static_cast<std::uint32_t>(count));
-  if (ret != 0) {
-    const std::int32_t err = -ret;
-    // the registration failed: undo the mapping and drop the duplicated fd
-    static_cast<void>(::munmap(memory, static_cast<std::size_t>(mapped_size)));
-    static_cast<void>(::close(ring_fd));
-    return tl::unexpected(DojioError{ErrorOpcode::MemoryPoolRegisterBuffers,
-                                     fmt::format("dojio: io_uring_register(IORING_REGISTER_BUFFERS, nr={}) failed: {}",
-                                                 count, std::error_code(err, std::generic_category()).message())});
-  }
+#endif
 
-  // the buffers are registered: the implementation now owns the mapping and ring_fd
+  // the implementation owns the mapping (and the duplicated ring fd when registered)
   return RegisteredMemoryPool(std::make_unique<Impl>(ring_fd, buffer_size, chunk_size, count, mapped_size, memory));
 }
 
@@ -238,8 +297,10 @@ std::byte* RegisteredMemoryPool::base() const noexcept { return impl().base(); }
 RegisteredBuffer::RegisteredBuffer(RegisteredMemoryPool::Impl& impl, std::uint64_t index) noexcept
     : impl_(&impl), index_(index) {}
 
-RegisteredBuffer::RegisteredBuffer(RegisteredBuffer&& other) noexcept : impl_(other.impl_), index_(other.index_) {
+RegisteredBuffer::RegisteredBuffer(RegisteredBuffer&& other) noexcept
+    : impl_(other.impl_), index_(other.index_), length_(other.length_) {
   other.impl_ = nullptr;
+  other.length_ = 0;
 }
 
 RegisteredBuffer& RegisteredBuffer::operator=(RegisteredBuffer&& other) noexcept {
@@ -247,7 +308,9 @@ RegisteredBuffer& RegisteredBuffer::operator=(RegisteredBuffer&& other) noexcept
     release();
     impl_ = other.impl_;
     index_ = other.index_;
+    length_ = other.length_;
     other.impl_ = nullptr;
+    other.length_ = 0;
   }
   return *this;
 }
@@ -266,6 +329,29 @@ std::byte* RegisteredBuffer::data() const {
   return impl_->chunk(index_);
 }
 
-std::uint64_t RegisteredBuffer::size() const { return impl_ != nullptr ? impl_->buffer_size() : 0; }
+std::uint64_t RegisteredBuffer::size() const { return impl_ != nullptr ? length_ : 0; }
+
+std::uint64_t RegisteredBuffer::capacity() const { return impl_ != nullptr ? impl_->buffer_size() : 0; }
+
+void RegisteredBuffer::append(std::span<const std::byte> bytes) {
+  enforce_precondition(impl_ != nullptr);
+  enforce_precondition(bytes.size() <= (capacity() - length_));
+  std::copy(bytes.begin(), bytes.end(), data() + static_cast<std::ptrdiff_t>(length_));
+  length_ += static_cast<std::uint64_t>(bytes.size());
+}
+
+void RegisteredBuffer::append(std::string_view text) {
+  // the byte representation of the text is appended as is
+  append(std::span<const std::byte>{reinterpret_cast<const std::byte*>(text.data()), text.size()});
+}
+
+void RegisteredBuffer::resize(std::uint64_t size) {
+  enforce_precondition(impl_ != nullptr && size <= capacity());
+  length_ = size;
+}
+
+void RegisteredBuffer::clear() { length_ = 0; }
 
 } // namespace dojio
+
+#undef DOJIO_MEMORY_POOL_REGISTERS_BUFFERS

@@ -69,15 +69,17 @@ endfunction()
 
 # dojio static library (private header: ring.hpp holds the io_uring internals)
 #
-# io_uring is Linux-only: on every other POSIX system the RingEngine and the
-# registered memory pool are replaced by stubs that report NotSupported.
-set(DOJIO_PLATFORM_SOURCES)
+# io_uring is Linux-only: on every other POSIX system the RingEngine is replaced by a
+# stub that reports NotSupported. The registered memory pool is built on every
+# platform: it only performs the io_uring fixed-buffer registration on Linux with a
+# kernel that exposes it (see memory_pool.cpp).
+set(DOJIO_PLATFORM_SOURCES "dojio/memory_pool.cpp")
 set(DOJIO_PLATFORM_HEADERS)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    list(APPEND DOJIO_PLATFORM_SOURCES "dojio/ring.cpp" "dojio/ring_engine.cpp" "dojio/memory_pool.cpp")
+    list(APPEND DOJIO_PLATFORM_SOURCES "dojio/ring.cpp" "dojio/ring_engine.cpp")
     list(APPEND DOJIO_PLATFORM_HEADERS "dojio/ring.hpp")
 else()
-    list(APPEND DOJIO_PLATFORM_SOURCES "dojio/ring_engine_stub.cpp" "dojio/memory_pool_stub.cpp")
+    list(APPEND DOJIO_PLATFORM_SOURCES "dojio/ring_engine_stub.cpp")
     list(APPEND DOJIO_PLATFORM_HEADERS "dojio/io_uring_stub.hpp")
 endif()
 

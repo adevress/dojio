@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
+#include <string_view>
 
 #include <tl/expected.hpp>
 
@@ -31,9 +33,12 @@ class RegisteredBuffer;
 /// Memory pool of io_uring registered buffers.
 ///
 /// The backing memory is allocated as whole pages with mmap() and distributed in
-/// chunks. Every chunk is registered once with the io_uring instance
-/// (IORING_REGISTER_BUFFERS), so read/write operations submitted with it take the
-/// zero-copy READ_FIXED/WRITE_FIXED path (no per-operation page pinning).
+/// chunks. On Linux with a kernel exposing io_uring (5.1+), every chunk is registered
+/// once with the io_uring instance (IORING_REGISTER_BUFFERS), so read/write operations
+/// submitted with it take the zero-copy READ_FIXED/WRITE_FIXED path (no per-operation
+/// page pinning). On other platforms, or with a kernel without io_uring, the pool
+/// maps the same chunks but performs no registration and ignores the ring: the chunks
+/// are then plain mmap'ed memory.
 ///
 /// create() duplicates the ring file descriptor (close-on-exec): the pool holds its
 /// own reference on the io_uring instance and closes it in its destructor, so the
@@ -65,6 +70,8 @@ public:
   /// Returns a DojioError (opcode + message) instead of throwing when the ring file
   /// descriptor duplication, the backing mmap(2) or the io_uring fixed-buffer
   /// registration fails. Nothing is left registered on the ring in that case.
+  /// The ring file descriptor duplication and the registration are skipped (and
+  /// cannot fail) when the platform or the running kernel has no io_uring support.
   static tl::expected<RegisteredMemoryPool, DojioError> create(detail::IoUring& ring, std::uint64_t buffer_size,
                                                                std::uint64_t count);
 
@@ -114,6 +121,11 @@ private:
 /// instance as a fixed buffer, so read/write operations submitted with it take the
 /// zero-copy READ_FIXED/WRITE_FIXED path (no per-operation page pinning).
 ///
+/// A buffer starts empty (size() == 0) and can hold up to capacity() bytes, the size
+/// of its pool chunk: append() fills it and checks the capacity, size() reports the
+/// number of bytes it currently holds (the length a send writes). The length is also
+/// set to the received byte count after a read/recv completion.
+///
 /// Destroying the buffer returns it to its pool.
 /// Neither the buffer nor the pool are thread safe.
 class RegisteredBuffer {
@@ -129,8 +141,26 @@ public:
 
   /// Data pointer of the buffer. Precondition: the buffer is not empty (not moved-from).
   [[nodiscard]] std::byte* data() const;
-  /// Size of the buffer (0 for an empty / moved-from buffer).
+  /// Number of bytes currently in the buffer: the total length appended to it, or the
+  /// number of bytes received into it (0 for an empty / moved-from buffer).
   [[nodiscard]] std::uint64_t size() const;
+  /// Maximum number of bytes the buffer can hold (the size of its pool chunk).
+  [[nodiscard]] std::uint64_t capacity() const;
+
+  /// Appends bytes at the end of the buffer.
+  /// Precondition: the buffer is not empty and size() + bytes.size() <= capacity().
+  void append(std::span<const std::byte> bytes);
+  /// Appends text at the end of the buffer (same capacity precondition).
+  void append(std::string_view text);
+
+  /// Sets the number of bytes held by the buffer, e.g. the length of a received
+  /// payload. The content is left untouched.
+  /// Precondition: size <= capacity().
+  void resize(std::uint64_t size);
+
+  /// Resets the number of bytes held by the buffer to 0, so that the next append()
+  /// starts at the beginning of the chunk. The content is left untouched.
+  void clear();
 
   /// Index of the buffer in the io_uring fixed buffer table.
   [[nodiscard]] std::uint16_t index() const noexcept { return static_cast<std::uint16_t>(index_); }
@@ -146,6 +176,7 @@ private:
 
   RegisteredMemoryPool::Impl* impl_ = nullptr;
   std::uint64_t index_ = 0;
+  std::uint64_t length_ = 0;
 };
 
 } // namespace dojio

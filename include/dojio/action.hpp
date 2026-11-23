@@ -54,6 +54,9 @@ struct OsVersion {
 /// non-Linux platforms.
 const OsVersion& extract_os_version();
 
+/// True when the running kernel exposes io_uring at all (Linux 5.1+), and therefore
+/// its fixed-buffer table (IORING_REGISTER_BUFFERS).
+bool kernel_supports_io_uring();
 /// True when the running kernel exposes IORING_OP_BIND / IORING_OP_LISTEN (Linux 6.11+).
 bool kernel_supports_bind_listen();
 /// True when the running kernel exposes IORING_OP_FTRUNCATE (Linux 6.9+).
@@ -197,20 +200,32 @@ public:
       return;
     }
     if constexpr (std::is_same_v<Op, FstatOp>) {
-      invoke(Result<Value>(detail::statx_to_stat(buffer_.data(), buffer_bytes())), res);
+      invoke(Result<Value>(detail::statx_to_stat(buffer_.data(), buffer_capacity_bytes())), res);
     } else {
       invoke(Result<Value>(make_value(res)), res);
     }
   }
 
 private:
+  /// Number of bytes held by the buffer: what a write-like operation sends.
   std::uint64_t buffer_bytes() const {
     return static_cast<std::uint64_t>(buffer_.size()) * sizeof(typename Buffer::value_type);
   }
 
-  void set_buffer(Sqe& sqe, bool fixed) {
+  /// Number of bytes an operation may have the kernel write into the buffer: the whole
+  /// capacity of a registered chunk (its length is set to the transferred byte count at
+  /// completion), the current size of a regular container.
+  std::uint64_t buffer_capacity_bytes() const {
+    if constexpr (std::is_same_v<Buffer, RegisteredBuffer>) {
+      return buffer_.capacity() * sizeof(typename Buffer::value_type);
+    } else {
+      return buffer_bytes();
+    }
+  }
+
+  void set_buffer(Sqe& sqe, bool fixed, bool kernel_writes) {
     sqe.addr = detail::uring_cast<std::uintptr_t>(buffer_.data());
-    sqe.len = static_cast<std::uint32_t>(buffer_bytes());
+    sqe.len = static_cast<std::uint32_t>(kernel_writes ? buffer_capacity_bytes() : buffer_bytes());
     if constexpr (std::is_same_v<Buffer, RegisteredBuffer>) {
       if (fixed) {
         sqe.buf_index = buffer_.index();
@@ -237,7 +252,7 @@ private:
       } else {
         sqe.off = ~static_cast<std::uint64_t>(0); // current file position
       }
-      set_buffer(sqe, std::is_same_v<Buffer, RegisteredBuffer>);
+      set_buffer(sqe, std::is_same_v<Buffer, RegisteredBuffer>, /*kernel_writes=*/true);
     } else if constexpr (std::is_same_v<Op, WriteOp> || std::is_same_v<Op, PwriteOp>) {
       if constexpr (std::is_same_v<Buffer, RegisteredBuffer>) {
         sqe.opcode = static_cast<std::uint8_t>(IoOp::WriteFixed);
@@ -250,7 +265,7 @@ private:
       } else {
         sqe.off = ~static_cast<std::uint64_t>(0); // current file position
       }
-      set_buffer(sqe, std::is_same_v<Buffer, RegisteredBuffer>);
+      set_buffer(sqe, std::is_same_v<Buffer, RegisteredBuffer>, /*kernel_writes=*/false);
     } else if constexpr (std::is_same_v<Op, FstatOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Statx);
       sqe.fd = op_.fd.value();
@@ -277,7 +292,7 @@ private:
       if constexpr (!std::is_same_v<Buffer, std::monostate>) {
         // the kernel takes the address buffer capacity from *addr_len (addr2) and
         // leaves the length field at 0
-        op_.addr_len = static_cast<std::uint32_t>(buffer_bytes());
+        op_.addr_len = static_cast<std::uint32_t>(buffer_capacity_bytes());
         sqe.addr = detail::uring_cast<std::uintptr_t>(buffer_.data());
         sqe.addr2 = detail::uring_cast<std::uintptr_t>(&op_.addr_len);
       }
@@ -285,12 +300,12 @@ private:
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Send);
       sqe.fd = op_.fd.value();
       sqe.op_flags = static_cast<std::uint32_t>(op_.flags);
-      set_buffer(sqe, false);
+      set_buffer(sqe, false, /*kernel_writes=*/false);
     } else if constexpr (std::is_same_v<Op, RecvOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Recv);
       sqe.fd = op_.fd.value();
       sqe.op_flags = static_cast<std::uint32_t>(op_.flags);
-      set_buffer(sqe, false);
+      set_buffer(sqe, false, /*kernel_writes=*/true);
     } else if constexpr (std::is_same_v<Op, TimeoutOp>) {
       sqe.opcode = static_cast<std::uint8_t>(IoOp::Timeout);
       sqe.addr = detail::uring_cast<std::uintptr_t>(&op_.ts);

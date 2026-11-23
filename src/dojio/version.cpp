@@ -66,6 +66,12 @@ const OsVersion& extract_os_version() {
   return version;
 }
 
+bool kernel_supports_io_uring() {
+  const OsVersion& version = extract_os_version();
+  // io_uring appeared in Linux 5.1
+  return version.major > 5 || (version.major == 5 && version.minor >= 1);
+}
+
 bool kernel_supports_bind_listen() {
   const OsVersion& version = extract_os_version();
   return version.major > 6 || (version.major == 6 && version.minor >= 11);
