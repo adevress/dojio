@@ -5,9 +5,29 @@ include(CTest)
 include(GNUInstallDirs)
 
 option(DOJIO_COVERAGE "Enable Dojio code coverage" OFF)
-option(DOJIO_SANITIZER "Enable the sanitizer for testing and debug" OFF)
+option(DOJIO_SANITIZER_ADDRESS "Enable AddressSanitizer for testing and debug" OFF)
+option(DOJIO_SANITIZER_MEMORY "Enable MemorySanitizer for testing and debug (clang + instrumented libc++)" OFF)
+option(DOJIO_SANITIZER_UNDEFINED "Enable UndefinedBehaviorSanitizer for testing and debug" OFF)
 option(DOJIO_LTO_OPT "Enable LTO optimization" ON)
 option(DOJIO_STATIC_BUILD "Produce static binaries" OFF)
+
+# the Address and Memory sanitizers install incompatible runtimes and cannot be
+# linked into the same binary
+if(DOJIO_SANITIZER_ADDRESS AND DOJIO_SANITIZER_MEMORY)
+message(FATAL_ERROR
+    "DOJIO_SANITIZER_ADDRESS and DOJIO_SANITIZER_MEMORY cannot be enabled together: "
+    "the AddressSanitizer and MemorySanitizer runtimes are mutually exclusive")
+endif()
+
+# MemorySanitizer only exists in clang
+if(DOJIO_SANITIZER_MEMORY AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+message(FATAL_ERROR "DOJIO_SANITIZER_MEMORY requires clang")
+endif()
+
+set(DOJIO_ANY_SANITIZER OFF)
+if(DOJIO_SANITIZER_ADDRESS OR DOJIO_SANITIZER_MEMORY OR DOJIO_SANITIZER_UNDEFINED)
+set(DOJIO_ANY_SANITIZER ON)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,19 +54,61 @@ list(APPEND DOJIO_COMMON_LINK_FLAGS
 )
 endif()
 
-if(DOJIO_LTO_OPT)
+# Link-time optimization is disabled while a sanitizer is enabled: the two work
+# together on recent toolchains, but mixing them makes the sanitizer reports much
+# harder to read and is not worth the risk on a debug/testing build.
+if(DOJIO_LTO_OPT AND DOJIO_ANY_SANITIZER)
+message(STATUS "LTO disabled because a sanitizer is enabled")
+elseif(DOJIO_LTO_OPT)
 list(APPEND DOJIO_COMMON_FLAGS
     "-flto"
 )
 endif()
 
-if(DOJIO_SANITIZER)
+# every sanitizer build aborts on the first error instead of recovering, so the
+# test suite fails as soon as something is detected
+if(DOJIO_ANY_SANITIZER)
+list(APPEND DOJIO_COMMON_FLAGS
+    "-fno-sanitize-recover=all"
+)
+endif()
+
+# AddressSanitizer catches address and memory errors (out-of-bounds accesses,
+# use-after-free, double-free, ...) and, on Linux, comes with the LeakSanitizer
+# enabled by default so leaks are reported at exit as well. use-after-scope turns
+# on the stack lifetime tracking that is off by default for performance reasons.
+if(DOJIO_SANITIZER_ADDRESS)
 list(APPEND DOJIO_COMMON_FLAGS
     "-fsanitize=address"
-    "-fsanitize=undefined"
+    "-fsanitize-address-use-after-scope"
 )
 list(APPEND DOJIO_COMMON_LINK_FLAGS
     "-fsanitize=address"
+)
+endif()
+
+# MemorySanitizer catches reads of uninitialized memory. It is clang-only and
+# requires every translation unit, including the C++ standard library, to be
+# instrumented; track-origins keeps the allocation site that produced the
+# uninitialized value in the report.
+if(DOJIO_SANITIZER_MEMORY)
+list(APPEND DOJIO_COMMON_FLAGS
+    "-fsanitize=memory"
+    "-fsanitize-memory-track-origins=2"
+)
+list(APPEND DOJIO_COMMON_LINK_FLAGS
+    "-fsanitize=memory"
+)
+endif()
+
+# UndefinedBehaviorSanitizer catches undefined behavior. It is configured to
+# abort on the first offence so the test suite fails instead of silently
+# continuing past the offending operation.
+if(DOJIO_SANITIZER_UNDEFINED)
+list(APPEND DOJIO_COMMON_FLAGS
+    "-fsanitize=undefined"
+)
+list(APPEND DOJIO_COMMON_LINK_FLAGS
     "-fsanitize=undefined"
 )
 endif()

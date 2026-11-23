@@ -134,3 +134,22 @@ dojio_add_demo(demo_file_rw
     SOURCES "demos/demo_file_rw.cpp"
     LIBS dojio fmt::fmt
 )
+
+# the demos are end-to-end programs: running them through CTest exercises the whole
+# io_uring path. They require io_uring, so the tests are limited to Linux; a test
+# passes when the demo exits with status 0.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME demo_udp_pingpong_test COMMAND demo_udp_pingpong 200 64)
+    add_test(NAME demo_tcp_hello_test COMMAND demo_tcp_hello 2 500 42123)
+    add_test(NAME demo_file_rw_test COMMAND demo_file_rw "${CMAKE_CURRENT_BINARY_DIR}")
+
+    # the demos use fixed ports and write large files: keep them from running
+    # concurrently with each other or with a parallel `ctest -j`
+    set_tests_properties(
+        demo_udp_pingpong_test demo_tcp_hello_test demo_file_rw_test
+        PROPERTIES
+            LABELS "demo"
+            RUN_SERIAL TRUE
+            TIMEOUT 300
+    )
+endif()
