@@ -98,7 +98,14 @@ public:
     static_assert(BufferLike<Buffer>, "Buffer must be a std::vector, std::array or RegisteredBuffer");
     static_assert(uses_buffer_v<Op>, "this operation does not take a buffer; use submit(op, callback)");
     if constexpr (std::is_same_v<Op, FstatOp>) {
-      enforce_precondition((buffer.size() * sizeof(typename Buffer::value_type)) >= k_statx_size);
+      // the kernel writes the whole registered chunk, or the current size of a container
+      std::uint64_t bytes = 0;
+      if constexpr (std::is_same_v<Buffer, RegisteredBuffer>) {
+        bytes = buffer.capacity() * sizeof(typename Buffer::value_type);
+      } else {
+        bytes = static_cast<std::uint64_t>(buffer.size()) * sizeof(typename Buffer::value_type);
+      }
+      enforce_precondition(bytes >= k_statx_size);
     }
     return do_submit(std::move(op), std::move(buffer), std::move(callback), false);
   }

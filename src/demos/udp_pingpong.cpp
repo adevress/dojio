@@ -28,31 +28,18 @@
 namespace {
 
 std::int32_t make_udp_socket(dojio::RingEngine& engine, sockaddr_in& bound_addr) {
-  auto sock = dojio::create_socket(dojio::AddressFamily::Inet, dojio::SocketType::Dgram, dojio::SocketProtocol::Udp);
-  if (!sock.has_value()) {
-    fmt::print(stderr, "socket: {}\n", std::get<dojio::IoError>(sock.error()).message());
-    std::exit(1);
-  }
-  const std::int32_t fd = sock->value();
-  if (fd < 0) {
-    fmt::print(stderr, "socket: {}\n", std::error_code(errno, std::system_category()).message());
-    std::exit(1);
-  }
+  const std::int32_t fd =
+      dojio::result_or_fail(
+          dojio::create_socket(dojio::AddressFamily::Inet, dojio::SocketType::Dgram, dojio::SocketProtocol::Udp),
+          "socket")
+          .value();
   // bind through the RingEngine (IORING_OP_BIND on a recent kernel, inline bind(2) otherwise) to an
   // ephemeral loopback port
-  bool bound = false;
   engine.submit(dojio::bind(dojio::FileDescriptor{fd}, dojio::Ipv4Endpoint::loopback(0)),
-                [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
-                  if (r.has_value()) {
-                    bound = true;
-                  } else {
-                    fmt::print(stderr, "bind: {}\n", std::get<dojio::IoError>(r.error()).message());
-                  }
+                [](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
+                  dojio::result_or_fail(std::move(r), "bind");
                 });
   engine.process(dojio::RingEngine::ProcessMode::Batch);
-  if (!bound) {
-    std::exit(1);
-  }
   sockaddr_in addr{};
   socklen_t len = sizeof(addr);
   if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
@@ -70,12 +57,8 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   const std::uint64_t payload_size = argc > 2 ? static_cast<std::uint64_t>(std::atoi(argv[2])) : 64;
   const bool sqpoll = false;
 
-  auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 256, .sqpoll = sqpoll});
-  if (!ring_engine_result.has_value()) {
-    fmt::print(stderr, "ring engine: {}\n", ring_engine_result.error().message);
-    return 1;
-  }
-  auto engine = std::move(ring_engine_result).value();
+  auto engine = dojio::result_or_fail(
+      dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 256, .sqpoll = sqpoll}), "ring engine");
 
   sockaddr_in addr_a{};
   sockaddr_in addr_b{};

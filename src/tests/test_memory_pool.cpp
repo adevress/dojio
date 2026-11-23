@@ -5,9 +5,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <stdexcept>
+#include <string_view>
 #include <vector>
 
 #include <dojio/memory_pool.hpp>
@@ -56,9 +59,10 @@ TEST_CASE("RegisteredMemoryPool borrow/return tracks the active counter") {
     dojio::RegisteredBuffer buf = borrow_or_fail(pool);
     CHECK(static_cast<bool>(buf));
     CHECK(buf.data() != nullptr);
-    CHECK(buf.size() == 4096);
+    CHECK(buf.size() == 0);
+    CHECK(buf.capacity() == 4096);
     CHECK(pool.active_count() == 1);
-    std::memset(buf.data(), 0xAB, buf.size());
+    std::memset(buf.data(), 0xAB, buf.capacity());
     // the backing memory is whole mmap'ed pages, every chunk is cache-line aligned
     const std::size_t cache_line = dojio::cache_line_size();
     const long page = ::sysconf(_SC_PAGESIZE);
@@ -82,7 +86,7 @@ TEST_CASE("chunks are cache-line aligned even when buffer_size is not a multiple
     bufs.push_back(borrow_or_fail(pool));
   }
   for (const auto& b : bufs) {
-    CHECK(b.size() == 100);
+    CHECK(b.capacity() == 100);
     CHECK(reinterpret_cast<std::uintptr_t>(b.data()) % static_cast<std::uintptr_t>(cache_line) == 0);
   }
 }
@@ -173,6 +177,52 @@ TEST_CASE("RegisteredBuffer move semantics transfer ownership") {
   CHECK(pool.active_count() == 1);
 }
 
+TEST_CASE("RegisteredBuffer::append fills the chunk and checks the capacity") {
+  auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64});
+  REQUIRE(ring_engine_result.has_value());
+  auto engine = std::move(ring_engine_result).value();
+  auto pool_result = dojio::RegisteredMemoryPool::create(engine->ring(), 8, 2);
+  REQUIRE(pool_result.has_value());
+  auto& pool = *pool_result;
+  dojio::RegisteredBuffer buf = borrow_or_fail(pool);
+  CHECK(buf.size() == 0);
+  CHECK(buf.capacity() == 8);
+
+  buf.append(std::string_view{"hello"});
+  CHECK(buf.size() == 5);
+  CHECK(std::memcmp(buf.data(), "hello", 5) == 0);
+
+  // a span of bytes is appended right after the text
+  const std::array<std::byte, 2> tail{std::byte{'!'}, std::byte{'?'}};
+  buf.append(tail);
+  CHECK(buf.size() == 7);
+  CHECK(std::memcmp(buf.data(), "hello!?", 7) == 0);
+
+  // the capacity is checked: 7 + 2 bytes do not fit in the 8-byte chunk
+  CHECK_THROWS_AS(buf.append(std::string_view{"no"}), std::logic_error);
+  CHECK_THROWS_AS(buf.append(std::array<std::byte, 2>{}), std::logic_error);
+  CHECK(buf.size() == 7);
+
+  // resize records a length (e.g. after a receive) but cannot exceed the capacity
+  buf.resize(2);
+  CHECK(buf.size() == 2);
+  CHECK_THROWS_AS(buf.resize(9), std::logic_error);
+  CHECK(buf.size() == 2);
+
+  // clear() resets the length: the next append starts at the beginning of the chunk
+  buf.clear();
+  CHECK(buf.size() == 0);
+  buf.append(std::string_view{"ab"});
+  CHECK(buf.size() == 2);
+  CHECK(std::memcmp(buf.data(), "ab", 2) == 0);
+
+  // a moved-from buffer is empty
+  dojio::RegisteredBuffer moved = std::move(buf);
+  CHECK(buf.size() == 0);
+  CHECK(moved.size() == 2);
+  CHECK(pool.active_count() == 1);
+}
+
 TEST_CASE("RegisteredBuffer is usable as an io_uring fixed buffer for read") {
   auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64});
   REQUIRE(ring_engine_result.has_value());
@@ -204,6 +254,9 @@ TEST_CASE("RegisteredBuffer is usable as an io_uring fixed buffer for read") {
                    REQUIRE(r.has_value());
                    CHECK(res == 20);
                    const auto& buf = *r;
+                   // the received byte count is recorded by the buffer (like a vector resize)
+                   CHECK(buf.size() == 20);
+                   CHECK(buf.capacity() == 4096);
                    out.assign(buf.data(), buf.data() + res);
                  });
   engine->process(dojio::RingEngine::ProcessMode::Batch);
