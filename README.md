@@ -7,6 +7,9 @@
 [![gcc](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=gcc%20build%20%2B%20tests%20%2B%20benches&label=gcc)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
 [![clang](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=clang%20build%20%2B%20tests%20%2B%20benches&label=clang)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
 [![format](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=nix-format%20check&label=format)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
+[![asan](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=address%20sanitizer%20build%20%2B%20tests&label=asan)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
+[![ubsan](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=undefined%20sanitizer%20build%20%2B%20tests&label=ubsan)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
+[![msan](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=memory%20sanitizer%20build%20%2B%20tests&label=msan)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
 
 ## Summary
 
@@ -63,14 +66,28 @@ The default build type is `RelWithDebInfo`. Build artifacts:
 
 ### CMake options
 
-| Option                 | Default | Description                              |
-| ---------------------- | ------- | ---------------------------------------- |
-| `DOJIO_COVERAGE`       | `OFF`   | Enable code coverage instrumentation.    |
-| `DOJIO_SANITIZER`      | `OFF`   | Enable AddressSanitizer/UBSan.           |
-| `DOJIO_LTO_OPT`        | `ON`    | Enable link-time optimization.           |
-| `DOJIO_STATIC_BUILD`   | `OFF`   | Produce fully static binaries.           |
+| Option                       | Default | Description                                                          |
+| ---------------------------- | ------- | -------------------------------------------------------------------- |
+| `DOJIO_COVERAGE`             | `OFF`   | Enable code coverage instrumentation.                                |
+| `DOJIO_SANITIZER_ADDRESS`    | `OFF`   | Enable AddressSanitizer (address/memory errors and leaks).           |
+| `DOJIO_SANITIZER_MEMORY`     | `OFF`   | Enable MemorySanitizer (clang-only, needs an instrumented libc++).   |
+| `DOJIO_SANITIZER_UNDEFINED`  | `OFF`   | Enable UndefinedBehaviorSanitizer (aborts on undefined behavior).    |
+| `DOJIO_LTO_OPT`              | `ON`    | Enable link-time optimization (ignored with a sanitizer).            |
+| `DOJIO_STATIC_BUILD`         | `OFF`   | Produce fully static binaries.                                       |
 
-Example: `cmake -G Ninja -DDOJIO_SANITIZER=ON ../`
+Examples:
+
+```sh
+cmake -G Ninja -DDOJIO_SANITIZER_ADDRESS=ON ../
+cmake -G Ninja -DDOJIO_SANITIZER_UNDEFINED=ON ../
+cmake -G Ninja -DDOJIO_SANITIZER_MEMORY=ON ../
+```
+
+The sanitizer switches can be combined, except `DOJIO_SANITIZER_ADDRESS` and
+`DOJIO_SANITIZER_MEMORY` whose runtimes are mutually exclusive. `MSan` only
+produces reliable results when the C++ standard library (and every other
+dependency) is instrumented with `-fsanitize=memory`; with an uninstrumented
+`libc++`/`libstdc++` it reports false positives.
 
 ### Tests
 

@@ -72,3 +72,45 @@ jobs:
               "$build_dir/src/nanobench_ring_engine"
               "$build_dir/src/nanobench_memory_pool"
             '
+
+  # (4) build and run the tests under AddressSanitizer (address and memory
+  # errors, including leaks), with the most aggressive runtime checks
+  sanitizer-address:
+    name: address sanitizer build + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+      - name: Configure, build and test with AddressSanitizer
+        run: |
+          nix shell "github:NixOS/nixpkgs/${{ env.NIXPKGS_REV }}#go-task" \
+            --command task nix-sanitizer-address
+
+  # (5) build and run the tests under UndefinedBehaviorSanitizer
+  sanitizer-undefined:
+    name: undefined sanitizer build + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+      - name: Configure, build and test with UndefinedBehaviorSanitizer
+        run: |
+          nix shell "github:NixOS/nixpkgs/${{ env.NIXPKGS_REV }}#go-task" \
+            --command task nix-sanitizer-undefined
+
+  # (6) build and run the tests under MemorySanitizer. MemorySanitizer needs
+  # every dependency (including the C++ standard library) to be instrumented;
+  # nixpkgs only ships an uninstrumented libc++, so this job is expected to
+  # report false positives inside libc++ and is kept non-blocking until an
+  # MSan-instrumented libc++ is available.
+  sanitizer-memory:
+    name: memory sanitizer build + tests
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+      - name: Configure, build and test with MemorySanitizer
+        run: |
+          nix shell "github:NixOS/nixpkgs/${{ env.NIXPKGS_REV }}#go-task" \
+            --command task nix-sanitizer-memory
