@@ -136,26 +136,25 @@ TEST_CASE("a second RegisteredMemoryPool on the same ring fails without crashing
     ::close(raw_fd);
   }
   dojio::FileDescriptor fd{-1};
-  engine->submit(dojio::open_at(path, O_RDONLY, 0),
-                 [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
-                   REQUIRE(r.has_value());
-                   fd = *r;
-                 });
+  engine->submit(dojio::open_at(path, O_RDONLY, 0), [&](dojio::RingEngine&, dojio::Result<dojio::OpenAtResult> r) {
+    REQUIRE(r.has_value());
+    fd = r->fd;
+  });
   engine->process(dojio::RingEngine::ProcessMode::Batch);
   REQUIRE(fd.value() >= 0);
 
   bool read_ok = false;
-  engine->submit(dojio::pread(fd, 0), borrow_or_fail(first),
-                 [&](dojio::Result<dojio::RegisteredBuffer> r, dojio::OperationId, std::int32_t res) {
+  engine->submit(dojio::pread(fd, 0, borrow_or_fail(first)),
+                 [&](dojio::RingEngine&, dojio::Result<dojio::PreadResult<dojio::RegisteredBuffer>> r) {
                    REQUIRE(r.has_value());
-                   CHECK(res == 17);
+                   CHECK(r->size == 17);
                    read_ok = true;
                  });
   engine->process(dojio::RingEngine::ProcessMode::Batch);
   CHECK(read_ok);
   CHECK(first.active_count() == 0);
 
-  engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+  engine->submit(dojio::close(fd), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
   engine->process(dojio::RingEngine::ProcessMode::Batch);
   ::unlink(path.c_str());
   CHECK(engine->count_operations(dojio::RingEngine::OperationState::Failed) == 0);
@@ -237,11 +236,10 @@ TEST_CASE("RegisteredBuffer is usable as an io_uring fixed buffer for read") {
     ::close(fd);
   }
   dojio::FileDescriptor fd{-1};
-  engine->submit(dojio::open_at(path, O_RDONLY, 0),
-                 [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
-                   REQUIRE(r.has_value());
-                   fd = *r;
-                 });
+  engine->submit(dojio::open_at(path, O_RDONLY, 0), [&](dojio::RingEngine&, dojio::Result<dojio::OpenAtResult> r) {
+    REQUIRE(r.has_value());
+    fd = r->fd;
+  });
   engine->process(dojio::RingEngine::ProcessMode::Batch);
   REQUIRE(fd.value() >= 0);
 
@@ -249,22 +247,22 @@ TEST_CASE("RegisteredBuffer is usable as an io_uring fixed buffer for read") {
   REQUIRE(pool_result.has_value());
   auto& pool = *pool_result;
   std::vector<std::byte> out;
-  engine->submit(dojio::pread(fd, 0), borrow_or_fail(pool),
-                 [&](dojio::Result<dojio::RegisteredBuffer> r, dojio::OperationId, std::int32_t res) {
+  engine->submit(dojio::pread(fd, 0, borrow_or_fail(pool)),
+                 [&](dojio::RingEngine&, dojio::Result<dojio::PreadResult<dojio::RegisteredBuffer>> r) {
                    REQUIRE(r.has_value());
-                   CHECK(res == 20);
-                   const auto& buf = *r;
+                   CHECK(r->size == 20);
+                   const auto& buf = r->buffer;
                    // the received byte count is recorded by the buffer (like a vector resize)
                    CHECK(buf.size() == 20);
                    CHECK(buf.capacity() == 4096);
-                   out.assign(buf.data(), buf.data() + res);
+                   out.assign(buf.data(), buf.data() + r->size);
                  });
   engine->process(dojio::RingEngine::ProcessMode::Batch);
   CHECK(out.size() == 20);
   CHECK(std::memcmp(out.data(), "fixed-buffer-content", 20) == 0);
   CHECK(engine->count_operations(dojio::RingEngine::OperationState::Completed) == 2);
 
-  engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+  engine->submit(dojio::close(fd), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
   engine->process(dojio::RingEngine::ProcessMode::Batch);
   ::unlink(path.c_str());
 }

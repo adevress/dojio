@@ -68,9 +68,9 @@ TEST_CASE("DOJIO_FORCE_LINUX_OLD_KERNEL runs bind/listen through the synchronous
 
     bool bound = false;
     engine->submit(dojio::bind(dojio::FileDescriptor{lfd}, dojio::Ipv4Endpoint::loopback(0)),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::BindResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 0);
+                     CHECK(r->fd.value() == lfd);
                      bound = true;
                    });
     engine->process(Mode::Batch);
@@ -78,9 +78,9 @@ TEST_CASE("DOJIO_FORCE_LINUX_OLD_KERNEL runs bind/listen through the synchronous
 
     bool listened = false;
     engine->submit(dojio::listen(dojio::FileDescriptor{lfd}, 16),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::ListenResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 0);
+                     CHECK(r->fd.value() == lfd);
                      listened = true;
                    });
     engine->process(Mode::Batch);
@@ -111,36 +111,31 @@ TEST_CASE("DOJIO_FORCE_LINUX_OLD_KERNEL runs ftruncate and pipe through the sync
     const std::string path = make_tmp_file("old_linux_kernel", "0123456789");
 
     dojio::FileDescriptor fd{-1};
-    engine->submit(dojio::open_at(path, O_RDWR),
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
-                     REQUIRE(r.has_value());
-                     fd = *r;
-                   });
+    engine->submit(dojio::open_at(path, O_RDWR), [&](dojio::RingEngine&, dojio::Result<dojio::OpenAtResult> r) {
+      REQUIRE(r.has_value());
+      fd = r->fd;
+    });
     engine->process(Mode::Batch);
     REQUIRE(fd.value() >= 0);
 
     // ftruncate runs inline (old kernel) and truncates the file
-    engine->submit(dojio::ftruncate(fd, 4), [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::ftruncate(fd, 4), [&](dojio::RingEngine&, dojio::Result<dojio::FtruncateResult> r) {
       REQUIRE(r.has_value());
-      CHECK(res == 0);
+      CHECK(r->length == 4);
     });
     engine->process(Mode::Batch);
-    engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
-                   [&](dojio::Result<struct stat> r, dojio::OperationId, std::int32_t res) {
-                     REQUIRE(r.has_value());
-                     CHECK(res == 0);
-                     CHECK(r->st_size == 4);
-                   });
+    engine->submit(dojio::fstat(fd), [&](dojio::RingEngine&, dojio::Result<struct stat> r) {
+      REQUIRE(r.has_value());
+      CHECK(r->st_size == 4);
+    });
     engine->process(Mode::Batch);
 
     // pipe runs inline (old kernel) and yields two usable descriptors
     dojio::PipeBuffer pipe_fds{};
-    engine->submit(dojio::pipe(0), std::move(pipe_fds),
-                   [&](dojio::Result<dojio::PipeBuffer> r, dojio::OperationId, std::int32_t res) {
-                     REQUIRE(r.has_value());
-                     CHECK(res == 0);
-                     pipe_fds = *r;
-                   });
+    engine->submit(dojio::pipe(0), [&](dojio::RingEngine&, dojio::Result<dojio::PipeResult> r) {
+      REQUIRE(r.has_value());
+      pipe_fds = r->fds;
+    });
     engine->process(Mode::Batch);
     REQUIRE(pipe_fds[0].value() >= 0);
     REQUIRE(pipe_fds[1].value() >= 0);
@@ -149,9 +144,9 @@ TEST_CASE("DOJIO_FORCE_LINUX_OLD_KERNEL runs ftruncate and pipe through the sync
     REQUIRE(::read(pipe_fds[0].value(), buf.data(), buf.size()) == 2);
     CHECK(std::string(buf.data(), buf.size()) == "xy");
 
-    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
-    engine->submit(dojio::close(pipe_fds[0]), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
-    engine->submit(dojio::close(pipe_fds[1]), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(fd), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
+    engine->submit(dojio::close(pipe_fds[0]), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
+    engine->submit(dojio::close(pipe_fds[1]), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->process(Mode::Batch);
     CHECK(engine->count_operations(State::Failed) == 0);
     ::unlink(path.c_str());
@@ -172,23 +167,21 @@ TEST_CASE("Batch runs inline operations chained from a completion callback") {
     bool truncated = false;
     // open_at completes on the ring; its callback chains an ftruncate, which runs
     // inline under DOJIO_FORCE_LINUX_OLD_KERNEL and must still be drained by Batch
-    engine->submit(dojio::open_at(path, O_RDWR),
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
-                     REQUIRE(r.has_value());
-                     fd = *r;
-                     engine->submit(dojio::ftruncate(fd, 4),
-                                    [&](dojio::Result<std::int32_t> r2, dojio::OperationId, std::int32_t res) {
-                                      REQUIRE(r2.has_value());
-                                      CHECK(res == 0);
-                                      truncated = true;
-                                    });
-                   });
+    engine->submit(dojio::open_at(path, O_RDWR), [&](dojio::RingEngine& ring, dojio::Result<dojio::OpenAtResult> r) {
+      REQUIRE(r.has_value());
+      fd = r->fd;
+      ring.submit(dojio::ftruncate(fd, 4), [&](dojio::RingEngine&, dojio::Result<dojio::FtruncateResult> r2) {
+        REQUIRE(r2.has_value());
+        CHECK(r2->length == 4);
+        truncated = true;
+      });
+    });
     engine->process(Mode::Batch);
     CHECK(truncated);
     CHECK(engine->count_operations(State::Pending) == 0);
     CHECK(engine->count_operations(State::Failed) == 0);
 
-    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(fd), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->process(Mode::Batch);
     ::unlink(path.c_str());
   }
@@ -206,9 +199,8 @@ TEST_CASE("poll(max_tasks) caps inline operation dispatch") {
   std::int32_t done = 0;
   for (std::uint64_t len = 8; len >= 4; len -= 2) {
     engine->submit(dojio::ftruncate(dojio::FileDescriptor{fd}, len),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::FtruncateResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 0);
                      done += 1;
                    });
   }

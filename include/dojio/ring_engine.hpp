@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <memory_resource>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -90,42 +91,27 @@ public:
   RingEngine(const RingEngine&) = delete;
   RingEngine& operator=(const RingEngine&) = delete;
 
-  /// Submits op with its associated buffer and completion callback.
+  /// Submits an operation, with its embedded buffer and its completion callback.
   ///
-  /// All parameters are passed by value; buffers use move semantics. Returns the
-  /// typed OperationId of the operation, usable with cancel(). The callback is
-  /// invoked at completion time with the Result as first parameter:
-  /// callback(Result<Value>, OperationId, raw_result).
-  template <typename Op, typename Buffer, typename Callback>
-  OperationId submit(Op op, Buffer buffer, Callback callback) {
-    static_assert(is_operation_v<Op>, "Op must be one of the dojio operation structs");
-    static_assert(BufferLike<Buffer>, "Buffer must be a std::vector, std::array or RegisteredBuffer");
-    static_assert(uses_buffer_v<Op>, "this operation does not take a buffer; use submit(op, callback)");
-    if constexpr (std::is_same_v<Op, FstatOp>) {
-      // the kernel writes the whole registered chunk, or the current size of a container
-      std::uint64_t bytes = 0;
-      if constexpr (std::is_same_v<Buffer, RegisteredBuffer>) {
-        bytes = buffer.capacity() * sizeof(typename Buffer::value_type);
-      } else {
-        bytes = static_cast<std::uint64_t>(buffer.size()) * sizeof(typename Buffer::value_type);
-      }
-      enforce_precondition(bytes >= k_statx_size);
-    }
-    return do_submit(std::move(op), std::move(buffer), std::move(callback), false);
-  }
-
-  /// Submits op without a buffer.
-  template <typename Op, typename Callback> OperationId submit(Op op, Callback callback) {
-    static_assert(is_operation_v<Op>, "Op must be one of the dojio operation structs");
-    static_assert(!uses_buffer_v<Op> || std::is_same_v<Op, AcceptOp>,
-                  "this operation requires a buffer; use submit(op, buffer, callback)");
-    return do_submit(std::move(op), std::monostate{}, std::move(callback), false);
+  /// The operation is passed by value (buffers use move semantics; the buffer is part
+  /// of the operation struct). Returns the typed OperationId of the operation, usable
+  /// with cancel(). The callback is invoked at completion time as
+  /// callback(RingEngine& engine, result): a reference to the underlying ring first,
+  /// then the operation result (a tl::expected carrying the operation result_value or
+  /// an ErrorCode).
+  template <OperationType Op, typename Callback> OperationId submit(Op op, Callback callback) {
+    static_assert(std::is_invocable_v<Callback&, RingEngine&, typename std::remove_cvref_t<Op>::result>,
+                  "callback must be invocable as callback(RingEngine&, Op::result)");
+    return do_submit(std::move(op), std::move(callback), false);
   }
 
   /// Arms a timer: the action completes successfully once the duration has elapsed.
+  /// The callback is invoked as callback(RingEngine&, Result<TimeoutResult>).
   template <typename Callback> OperationId submit(Timer timer, Callback callback) {
+    static_assert(std::is_invocable_v<Callback&, RingEngine&, TimeoutOp::result>,
+                  "callback must be invocable as callback(RingEngine&, Result<TimeoutResult>)");
     enforce_precondition(timer.duration() >= Timer::Duration{0});
-    return do_submit(timeout(timer.duration()), std::monostate{}, std::move(callback), true);
+    return do_submit(timeout(timer.duration()), std::move(callback), true);
   }
 
   /// Cancels a pending operation. The operation completes with the Cancelled error
@@ -175,9 +161,8 @@ public:
 private:
   explicit RingEngine(std::unique_ptr<detail::IoUring> ring);
 
-  template <typename Op, typename Buffer, typename Callback>
-  OperationId do_submit(Op op, Buffer buffer, Callback callback, bool timer) {
-    using ActionType = Action<Op, Buffer, Callback>;
+  template <OperationType Op, typename Callback> OperationId do_submit(Op op, Callback callback, bool timer) {
+    using ActionType = Action<Op, Callback>;
     static_assert(sizeof(ActionType) <= max_size_action,
                   "Action exceeds max_size_action: shrink the callback / buffer or raise max_size_action");
     // reserve the id first so the Action can be constructed with it; release the
@@ -185,8 +170,7 @@ private:
     const OperationId id = pending_.reserve_id();
     try {
       std::pmr::polymorphic_allocator<ActionType> allocator{action_pool_};
-      auto action = BoxPtr<ActionType>::make(allocator, id, std::move(op), std::move(buffer), std::move(callback),
-                                             timer, capabilities_);
+      auto action = BoxPtr<ActionType>::make(allocator, id, std::move(op), std::move(callback), timer, capabilities_);
       ActionBase& action_ref = *action;
       // insert into pending_ before writing to the ring so an SQPOLL kernel thread
       // observing the SQE immediately always sees a live, stable Action

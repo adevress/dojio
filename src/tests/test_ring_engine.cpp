@@ -28,8 +28,8 @@ TEST_CASE("submit returns typed operation ids and count_operations tracks the st
   auto engine = std::move(ring_engine_result).value();
   using State = dojio::RingEngine::OperationState;
   std::int32_t completed = 0;
-  const std::function<void(dojio::Result<std::monostate>, dojio::OperationId, std::int32_t)> cb =
-      [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+  const std::function<void(dojio::RingEngine&, dojio::Result<dojio::TimeoutResult>)> cb =
+      [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
         CHECK(r.has_value());
         completed += 1;
       };
@@ -54,14 +54,12 @@ TEST_CASE("cancel completes the operation with the Cancelled error code (a failu
   auto engine = std::move(ring_engine_result).value();
   using State = dojio::RingEngine::OperationState;
   bool called = false;
-  const dojio::OperationId id =
-      engine->submit(dojio::Timer{std::chrono::seconds(30)},
-                     [&](dojio::Result<std::monostate> r, dojio::OperationId got_id, std::int32_t) {
-                       called = true;
-                       CHECK(got_id == id);
-                       CHECK_FALSE(r.has_value());
-                       CHECK(std::holds_alternative<dojio::Cancelled>(r.error()));
-                     });
+  const dojio::OperationId id = engine->submit(dojio::Timer{std::chrono::seconds(30)},
+                                               [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
+                                                 called = true;
+                                                 CHECK_FALSE(r.has_value());
+                                                 CHECK(std::holds_alternative<dojio::Cancelled>(r.error()));
+                                               });
   CHECK(engine->cancel(id));
   engine->process(dojio::RingEngine::ProcessMode::Batch);
   CHECK(called);
@@ -79,8 +77,8 @@ TEST_CASE("process(Forever) loops until request_stop interrupts it") {
   auto engine = std::move(ring_engine_result).value();
   std::int32_t done = 0;
   constexpr std::int32_t k_target = 3;
-  std::function<void(dojio::Result<std::monostate>, dojio::OperationId, std::int32_t)> cb;
-  cb = [&](dojio::Result<std::monostate>, dojio::OperationId, std::int32_t) {
+  std::function<void(dojio::RingEngine&, dojio::Result<dojio::TimeoutResult>)> cb;
+  cb = [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult>) {
     done += 1;
     if (done < k_target) {
       engine->submit(dojio::Timer{std::chrono::milliseconds(1)}, cb);
@@ -109,7 +107,7 @@ TEST_CASE("the SQPOLL polling time option is applied when setting up the ring") 
   // the ring still works with a custom poll time
   std::int32_t done = 0;
   engine->submit(dojio::Timer{std::chrono::milliseconds(1)},
-                 [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                 [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                    CHECK(r.has_value());
                    done += 1;
                  });
@@ -132,7 +130,7 @@ TEST_CASE("a batch of operations on an SQPOLL ring completes (kernel thread subm
   std::int32_t done = 0;
   for (std::int32_t i = 0; i < 8; ++i) {
     engine->submit(dojio::Timer{std::chrono::milliseconds(1)},
-                   [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                      CHECK(r.has_value());
                      done += 1;
                    });
@@ -152,7 +150,7 @@ TEST_CASE("operations on a non-SQPOLL ring still complete when SQPOLL is disable
   using State = dojio::RingEngine::OperationState;
   std::int32_t done = 0;
   engine->submit(dojio::Timer{std::chrono::milliseconds(1)},
-                 [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                 [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                    CHECK(r.has_value());
                    done += 1;
                  });
@@ -184,7 +182,7 @@ TEST_CASE("process(NonBlocking) dispatches ready completions without blocking") 
     using State = dojio::RingEngine::OperationState;
     std::int32_t done = 0;
     engine->submit(dojio::Timer{std::chrono::milliseconds(50)},
-                   [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                      CHECK(r.has_value());
                      done += 1;
                    });
@@ -212,12 +210,12 @@ TEST_CASE("process(WaitOnce) returns after dispatching one completion") {
   using State = dojio::RingEngine::OperationState;
   std::int32_t done = 0;
   engine->submit(dojio::Timer{std::chrono::milliseconds(5)},
-                 [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                 [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                    CHECK(r.has_value());
                    done += 1;
                  });
-  const dojio::OperationId long_id = engine->submit(
-      dojio::Timer{std::chrono::seconds(30)}, [](dojio::Result<std::monostate>, dojio::OperationId, std::int32_t) {});
+  const dojio::OperationId long_id = engine->submit(dojio::Timer{std::chrono::seconds(30)},
+                                                    [](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult>) {});
   // WaitOnce blocks at most until the 5 ms timer fires, not until the 30 s one
   const auto start = std::chrono::steady_clock::now();
   engine->process(dojio::RingEngine::ProcessMode::WaitOnce);
@@ -238,7 +236,7 @@ TEST_CASE("poll() returns the number of dispatched callbacks") {
   auto engine = std::move(ring_engine_result).value();
   std::int32_t done = 0;
   engine->submit(dojio::Timer{std::chrono::milliseconds(1)},
-                 [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                 [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                    CHECK(r.has_value());
                    done += 1;
                  });
@@ -261,11 +259,11 @@ TEST_CASE("callbacks may submit new operations from the completion handler") {
   auto engine = std::move(ring_engine_result).value();
   std::int32_t stage = 0;
   engine->submit(dojio::Timer{std::chrono::milliseconds(1)},
-                 [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                 [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                    REQUIRE(r.has_value());
                    stage = 1;
                    engine->submit(dojio::Timer{std::chrono::milliseconds(1)},
-                                  [&](dojio::Result<std::monostate> r2, dojio::OperationId, std::int32_t) {
+                                  [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r2) {
                                     REQUIRE(r2.has_value());
                                     stage = 2;
                                   });
@@ -290,7 +288,7 @@ TEST_CASE("SQPOLL submit() publishes proactively before process() is called") {
   REQUIRE(engine->sqpoll_enabled());
   bool fired = false;
   engine->submit(dojio::Timer{std::chrono::milliseconds(5)},
-                 [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                 [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                    CHECK(r.has_value());
                    fired = true;
                  });
@@ -318,7 +316,7 @@ TEST_CASE("submitting more operations than sq_entries overflows cleanly into uns
     std::int32_t completed = 0;
     for (std::int32_t i = 0; i < k_total; ++i) {
       engine->submit(dojio::Timer{std::chrono::milliseconds(1)},
-                     [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                     [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                        CHECK(r.has_value());
                        completed += 1;
                      });
@@ -344,12 +342,12 @@ TEST_CASE("overflowed operations are flushed before blocking and can be cancelle
   long_ids.reserve(8);
   for (std::int32_t i = 0; i < 8; ++i) {
     long_ids.push_back(engine->submit(dojio::Timer{std::chrono::seconds(30)},
-                                      [](dojio::Result<std::monostate>, dojio::OperationId, std::int32_t) {}));
+                                      [](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult>) {}));
   }
   // 9th op overflows into unsubmitted_: cancel it before process()
   bool cancelled_called = false;
   const dojio::OperationId overflow_cancel_id = engine->submit(
-      dojio::Timer{std::chrono::seconds(30)}, [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+      dojio::Timer{std::chrono::seconds(30)}, [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
         cancelled_called = true;
         CHECK_FALSE(r.has_value());
         CHECK(std::holds_alternative<dojio::Cancelled>(r.error()));
@@ -357,7 +355,7 @@ TEST_CASE("overflowed operations are flushed before blocking and can be cancelle
   // 10th op also overflows into unsubmitted_: a short 5 ms timer
   bool short_fired = false;
   engine->submit(dojio::Timer{std::chrono::milliseconds(5)},
-                 [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                 [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                    CHECK(r.has_value());
                    short_fired = true;
                  });
@@ -399,7 +397,7 @@ TEST_CASE("process() and poll() respect the max_tasks cap") {
     std::int32_t completed = 0;
     for (std::int32_t i = 0; i < k_total; ++i) {
       engine->submit(dojio::Timer{std::chrono::milliseconds(1)},
-                     [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                     [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                        CHECK(r.has_value());
                        completed += 1;
                      });

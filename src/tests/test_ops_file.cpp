@@ -21,7 +21,8 @@ namespace {
 
 std::string make_tmp_path(const std::string& tag) {
   static std::int32_t counter = 0;
-  return (std::filesystem::temp_directory_path() / fmt::format("dojio_test_{}_{}_{}", tag, ::getpid(), counter++))
+  counter += 1;
+  return (std::filesystem::temp_directory_path() / fmt::format("dojio_test_{}_{}_{}", tag, ::getpid(), counter))
       .string();
 }
 
@@ -57,31 +58,30 @@ TEST_CASE("open, write, pwrite, pread, read, fstat, close on a file") {
 
     // open
     dojio::FileDescriptor fd{-1};
-    engine->submit(dojio::open_at(path, O_RDWR),
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t res) {
-                     REQUIRE(r.has_value());
-                     CHECK(res >= 0);
-                     fd = *r;
-                   });
+    engine->submit(dojio::open_at(path, O_RDWR), [&](dojio::RingEngine&, dojio::Result<dojio::OpenAtResult> r) {
+      REQUIRE(r.has_value());
+      fd = r->fd;
+    });
     engine->process(Mode::Batch);
     REQUIRE(fd.value() >= 0);
 
     // write at the current position (0): overwrite the first 4 bytes with "ABCD"
-    std::int32_t written = -1;
-    engine->submit(dojio::write(fd), to_bytes("ABCD"),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+    std::uint64_t written = 0;
+    engine->submit(dojio::write(fd, to_bytes("ABCD")),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::WriteResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     written = res;
+                     written = r->size;
                    });
     engine->process(Mode::Batch);
     CHECK(written == 4);
 
     // pwrite at offset 8: "WXYZ" (does not move the current position)
-    std::int32_t pwritten = -1;
-    engine->submit(dojio::pwrite(fd, 8), to_bytes("WXYZ"),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+    std::uint64_t pwritten = 0;
+    engine->submit(dojio::pwrite(fd, 8, to_bytes("WXYZ")),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::PwriteResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     pwritten = res;
+                     pwritten = r->size;
+                     CHECK(r->offset == 8);
                    });
     engine->process(Mode::Batch);
     CHECK(pwritten == 4);
@@ -89,42 +89,40 @@ TEST_CASE("open, write, pwrite, pread, read, fstat, close on a file") {
 
     // pread 8 bytes at offset 0
     std::string pread_out;
-    engine->submit(dojio::pread(fd, 0), std::vector<std::byte>(8),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::pread(fd, 0, std::vector<std::byte>(8)),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::PreadResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 8);
-                     CHECK(r->size() == 8); // buffer shrunk to the bytes read
-                     pread_out = to_string(*r);
+                     CHECK(r->size == 8);
+                     CHECK(r->buffer.size() == 8); // buffer shrunk to the bytes read
+                     pread_out = to_string(r->buffer);
                    });
     engine->process(Mode::Batch);
     CHECK(pread_out == "ABCDo wo");
 
     // read at the current position (4 after the write): 6 bytes
     std::string read_out;
-    engine->submit(dojio::read(fd), std::vector<std::byte>(6),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::read(fd, std::vector<std::byte>(6)),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::ReadResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 6);
-                     read_out = to_string(*r);
+                     CHECK(r->size == 6);
+                     read_out = to_string(r->buffer);
                    });
     engine->process(Mode::Batch);
     CHECK(read_out == "o woWX");
 
     // fstat: the result is the struct stat built from the kernel-filled statx buffer
-    engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
-                   [&](dojio::Result<struct stat> r, dojio::OperationId, std::int32_t res) {
-                     REQUIRE(r.has_value());
-                     CHECK(res == 0);
-                     CHECK(r->st_size == 18);
-                     CHECK(S_ISREG(r->st_mode));
-                   });
+    engine->submit(dojio::fstat(fd), [&](dojio::RingEngine&, dojio::Result<struct stat> r) {
+      REQUIRE(r.has_value());
+      CHECK(r->st_size == 18);
+      CHECK(S_ISREG(r->st_mode));
+    });
     engine->process(Mode::Batch);
 
     // close
     bool closed = false;
-    engine->submit(dojio::close(fd), [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::close(fd), [&](dojio::RingEngine&, dojio::Result<dojio::CloseResult> r) {
       REQUIRE(r.has_value());
-      CHECK(res == 0);
+      CHECK(r->fd == fd);
       closed = true;
     });
     engine->process(Mode::Batch);
@@ -148,24 +146,23 @@ TEST_CASE("pread into a std::array buffer") {
     using Mode = dojio::RingEngine::ProcessMode;
     const std::string path = make_tmp_file("array_buf", "0123456789");
     dojio::FileDescriptor fd{-1};
-    engine->submit(dojio::open_at(path, O_RDONLY, 0),
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
-                     REQUIRE(r.has_value());
-                     fd = *r;
-                   });
+    engine->submit(dojio::open_at(path, O_RDONLY, 0), [&](dojio::RingEngine&, dojio::Result<dojio::OpenAtResult> r) {
+      REQUIRE(r.has_value());
+      fd = r->fd;
+    });
     engine->process(Mode::Batch);
     REQUIRE(fd.value() >= 0);
 
     std::array<std::byte, 4> buf{};
-    engine->submit(dojio::pread(fd, 6), std::move(buf),
-                   [&](dojio::Result<std::array<std::byte, 4>> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::pread(fd, 6, std::move(buf)),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::PreadResult<std::array<std::byte, 4>>> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 4);
-                     const auto& b = *r;
+                     CHECK(r->size == 4);
+                     const auto& b = r->buffer;
                      CHECK(std::string{reinterpret_cast<const char*>(b.data()), b.size()} == "6789");
                    });
     engine->process(Mode::Batch);
-    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(fd), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->process(Mode::Batch);
     ::unlink(path.c_str());
   }
@@ -181,7 +178,7 @@ TEST_CASE("open of a missing file fails with the mapped I/O code") {
     using State = dojio::RingEngine::OperationState;
     bool called = false;
     engine->submit(dojio::open_at("/tmp/dojio_definitely_missing_file_xyz", O_RDONLY, 0),
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::OpenAtResult> r) {
                      called = true;
                      CHECK_FALSE(r.has_value());
                      REQUIRE(std::holds_alternative<dojio::IoError>(r.error()));
@@ -205,18 +202,17 @@ TEST_CASE("read on a closed fd fails with EBADF") {
     using State = dojio::RingEngine::OperationState;
     const std::string path = make_tmp_file("ebadf", "data");
     dojio::FileDescriptor fd{-1};
-    engine->submit(dojio::open_at(path, O_RDONLY, 0),
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
-                     REQUIRE(r.has_value());
-                     fd = *r;
-                   });
+    engine->submit(dojio::open_at(path, O_RDONLY, 0), [&](dojio::RingEngine&, dojio::Result<dojio::OpenAtResult> r) {
+      REQUIRE(r.has_value());
+      fd = r->fd;
+    });
     engine->process(Mode::Batch);
-    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(fd), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->process(Mode::Batch);
 
     bool called = false;
-    engine->submit(dojio::pread(fd, 0), std::vector<std::byte>(4),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t) {
+    engine->submit(dojio::pread(fd, 0, std::vector<std::byte>(4)),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::PreadResult<std::vector<std::byte>>> r) {
                      called = true;
                      CHECK_FALSE(r.has_value());
                      REQUIRE(std::holds_alternative<dojio::IoError>(r.error()));
@@ -241,68 +237,63 @@ TEST_CASE("ftruncate shrinks and grows a file") {
     const std::string path = make_tmp_file("ftruncate", "0123456789"); // 10 bytes
 
     dojio::FileDescriptor fd{-1};
-    engine->submit(dojio::open_at(path, O_RDWR),
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
-                     REQUIRE(r.has_value());
-                     fd = *r;
-                   });
+    engine->submit(dojio::open_at(path, O_RDWR), [&](dojio::RingEngine&, dojio::Result<dojio::OpenAtResult> r) {
+      REQUIRE(r.has_value());
+      fd = r->fd;
+    });
     engine->process(Mode::Batch);
     REQUIRE(fd.value() >= 0);
 
     // shrink the file to 4 bytes
     bool truncated = false;
-    engine->submit(dojio::ftruncate(fd, 4), [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::ftruncate(fd, 4), [&](dojio::RingEngine&, dojio::Result<dojio::FtruncateResult> r) {
       REQUIRE(r.has_value());
-      CHECK(res == 0);
+      CHECK(r->length == 4);
       truncated = true;
     });
     engine->process(Mode::Batch);
     CHECK(truncated);
 
     // the file is now exactly 4 bytes long
-    engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
-                   [&](dojio::Result<struct stat> r, dojio::OperationId, std::int32_t res) {
-                     REQUIRE(r.has_value());
-                     CHECK(res == 0);
-                     CHECK(r->st_size == 4);
-                   });
+    engine->submit(dojio::fstat(fd), [&](dojio::RingEngine&, dojio::Result<struct stat> r) {
+      REQUIRE(r.has_value());
+      CHECK(r->st_size == 4);
+    });
     engine->process(Mode::Batch);
 
     // reading past the end returns the 4 remaining bytes
     std::string shrunk;
-    engine->submit(dojio::pread(fd, 0), std::vector<std::byte>(8),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::pread(fd, 0, std::vector<std::byte>(8)),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::PreadResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 4);
-                     shrunk = to_string(*r);
+                     CHECK(r->size == 4);
+                     shrunk = to_string(r->buffer);
                    });
     engine->process(Mode::Batch);
     CHECK(shrunk == "0123");
 
     // grow the file back to 12 bytes: the new bytes read as zeroes
-    engine->submit(dojio::ftruncate(fd, 12), [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::ftruncate(fd, 12), [&](dojio::RingEngine&, dojio::Result<dojio::FtruncateResult> r) {
       REQUIRE(r.has_value());
-      CHECK(res == 0);
+      CHECK(r->length == 12);
     });
     engine->process(Mode::Batch);
-    engine->submit(dojio::fstat(fd), std::vector<std::byte>(dojio::k_statx_size),
-                   [&](dojio::Result<struct stat> r, dojio::OperationId, std::int32_t res) {
-                     REQUIRE(r.has_value());
-                     CHECK(res == 0);
-                     CHECK(r->st_size == 12);
-                   });
+    engine->submit(dojio::fstat(fd), [&](dojio::RingEngine&, dojio::Result<struct stat> r) {
+      REQUIRE(r.has_value());
+      CHECK(r->st_size == 12);
+    });
     engine->process(Mode::Batch);
     std::string grown;
-    engine->submit(dojio::pread(fd, 4), std::vector<std::byte>(8),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::pread(fd, 4, std::vector<std::byte>(8)),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::PreadResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 8);
-                     grown = to_string(*r);
+                     CHECK(r->size == 8);
+                     grown = to_string(r->buffer);
                    });
     engine->process(Mode::Batch);
     CHECK(grown == std::string(8, '\0'));
 
-    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(fd), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->process(Mode::Batch);
     CHECK(engine->count_operations(State::Failed) == 0);
     ::unlink(path.c_str());

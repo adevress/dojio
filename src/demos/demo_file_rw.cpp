@@ -22,6 +22,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fmt/format.h>
+#include <memory_resource>
 #include <random>
 #include <string>
 #include <system_error>
@@ -103,67 +104,71 @@ std::chrono::nanoseconds run_serial(const std::filesystem::path& directory,
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
 }
 
+/// Counters shared by the completion callbacks of the concurrent run.
+struct Counters {
+  std::int32_t completed = 0;
+  std::int32_t failed = 0;
+};
+
 /// Writes the k_file_count files concurrently through one RingEngine: every file is
 /// opened, then its whole payload buffer is written at offset 0, then fsynced and
 /// closed, with the 40 per-file chains progressing in parallel. Returns the elapsed
 /// wall-clock time.
 std::chrono::nanoseconds run_async(const std::filesystem::path& directory,
-                                   std::vector<std::vector<std::byte>>& buffers) {
+                                   std::vector<std::vector<std::byte>> buffers) {
   auto engine =
       dojio::result_or_fail(dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 256}), "async: ring engine");
 
-  std::int32_t completed = 0;
-  std::int32_t failed = 0;
+  dojio::SharedValue<Counters> counters = dojio::SharedValue<Counters>::make(std::pmr::new_delete_resource());
   const auto flags = static_cast<std::int32_t>(O_WRONLY | O_CREAT | O_TRUNC);
   const auto mode = static_cast<std::uint32_t>(0644);
 
   const auto start = std::chrono::steady_clock::now();
   for (std::int32_t i = 0; i < k_file_count; ++i) {
     const std::string path = (directory / file_name(i)).string();
-    engine->submit(dojio::open_at(path, flags, mode), [&engine, &buffers, &completed, &failed,
-                                                       i](dojio::Result<dojio::FileDescriptor> opened,
-                                                          dojio::OperationId, std::int32_t) {
+    auto payload = std::move(buffers[static_cast<std::size_t>(i)]);
+    engine->submit(dojio::open_at(path, flags, mode), [counters, i, payload = std::move(payload)](
+                                                          dojio::RingEngine& ring,
+                                                          dojio::Result<dojio::OpenAtResult> opened) mutable {
       if (!opened.has_value()) {
-        failed += 1;
+        counters->failed += 1;
         fmt::print(stderr, "async: open file {}: {}\n", i, std::get<dojio::IoError>(opened.error()).message());
         return;
       }
-      const std::int32_t fd = opened->value();
-      engine->submit(dojio::pwrite(dojio::FileDescriptor{fd}, 0), std::move(buffers[static_cast<std::size_t>(i)]),
-                     [&engine, &buffers, &completed, &failed, i, fd](dojio::Result<std::vector<std::byte>> written,
-                                                                     dojio::OperationId, std::int32_t result) {
-                       if (!written.has_value() || static_cast<std::uint64_t>(result) != k_file_size) {
-                         failed += 1;
-                         fmt::print(stderr, "async: write file {}\n", i);
-                         return;
-                       }
-                       buffers[static_cast<std::size_t>(i)] = std::move(*written);
-                       engine->submit(dojio::fsync(dojio::FileDescriptor{fd}),
-                                      [&engine, &completed, &failed, i, fd](dojio::Result<std::int32_t> synced,
-                                                                            dojio::OperationId, std::int32_t) {
-                                        if (!synced.has_value()) {
-                                          failed += 1;
-                                          fmt::print(stderr, "async: fsync file {}\n", i);
-                                          return;
-                                        }
-                                        engine->submit(dojio::close(dojio::FileDescriptor{fd}),
-                                                       [&completed, &failed](dojio::Result<std::int32_t> closed,
-                                                                             dojio::OperationId, std::int32_t) {
-                                                         if (!closed.has_value()) {
-                                                           failed += 1;
-                                                           return;
-                                                         }
-                                                         completed += 1;
-                                                       });
-                                      });
-                     });
+      const std::int32_t fd = opened->fd.value();
+      ring.submit(dojio::pwrite(dojio::FileDescriptor{fd}, 0, std::move(payload)),
+                  [counters, i, fd](dojio::RingEngine& ring2,
+                                    dojio::Result<dojio::PwriteResult<std::vector<std::byte>>> written) {
+                    if (!written.has_value() || written->size != k_file_size) {
+                      counters->failed += 1;
+                      fmt::print(stderr, "async: write file {}\n", i);
+                      return;
+                    }
+                    ring2.submit(dojio::fsync(dojio::FileDescriptor{fd}),
+                                 [counters, fd](dojio::RingEngine& ring3, dojio::Result<dojio::FsyncResult> synced) {
+                                   if (!synced.has_value()) {
+                                     counters->failed += 1;
+                                     fmt::print(stderr, "async: fsync file\n");
+                                     return;
+                                   }
+                                   ring3.submit(
+                                       dojio::close(dojio::FileDescriptor{fd}),
+                                       [counters](dojio::RingEngine&, dojio::Result<dojio::CloseResult> closed) {
+                                         if (!closed.has_value()) {
+                                           counters->failed += 1;
+                                           return;
+                                         }
+                                         counters->completed += 1;
+                                       });
+                                 });
+                  });
     });
   }
   engine->process(dojio::RingEngine::ProcessMode::Batch);
   const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
 
-  if (failed != 0 || completed != k_file_count) {
-    fmt::print(stderr, "async: {} files completed, {} failed\n", completed, failed);
+  if (counters->failed != 0 || counters->completed != k_file_count) {
+    fmt::print(stderr, "async: {} files completed, {} failed\n", counters->completed, counters->failed);
     std::exit(1);
   }
   return elapsed;
@@ -195,7 +200,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
              k_file_count);
 
   const auto serial_time = run_serial(serial_dir, buffers);
-  const auto async_time = run_async(async_dir, buffers);
+  const auto async_time = run_async(async_dir, std::move(buffers));
 
   const double mib = static_cast<double>(k_file_count) * static_cast<double>(k_file_size) / (1024.0 * 1024.0);
   const double serial_s = static_cast<double>(serial_time.count()) / 1e9;

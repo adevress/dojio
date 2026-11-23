@@ -16,9 +16,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
-#include <functional>
+#include <memory_resource>
 #include <numeric>
-#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -27,6 +26,20 @@
 
 namespace {
 
+using Bytes = std::vector<std::byte>;
+using RecvResult = dojio::RecvResult<Bytes>;
+using SendResult = dojio::SendResult<Bytes>;
+
+/// Data shared by every completion callback: the counters (and the vectors they fill).
+struct Counters {
+  std::int32_t round_trips = 0;
+  std::int32_t failed = 0;
+  std::vector<std::int64_t> latencies_ns;
+  std::chrono::steady_clock::time_point send_a_time{};
+};
+
+/// Creates and binds a UDP socket on an ephemeral loopback port through the engine.
+/// Fills bound_addr with the port the kernel assigned.
 std::int32_t make_udp_socket(dojio::RingEngine& engine, sockaddr_in& bound_addr) {
   const std::int32_t fd =
       dojio::result_or_fail(
@@ -35,10 +48,9 @@ std::int32_t make_udp_socket(dojio::RingEngine& engine, sockaddr_in& bound_addr)
           .value();
   // bind through the RingEngine (IORING_OP_BIND on a recent kernel, inline bind(2) otherwise) to an
   // ephemeral loopback port
-  engine.submit(dojio::bind(dojio::FileDescriptor{fd}, dojio::Ipv4Endpoint::loopback(0)),
-                [](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
-                  dojio::result_or_fail(std::move(r), "bind");
-                });
+  engine.submit(
+      dojio::bind(dojio::FileDescriptor{fd}, dojio::Ipv4Endpoint::loopback(0)),
+      [](dojio::RingEngine&, dojio::Result<dojio::BindResult> r) { dojio::result_or_fail(std::move(r), "bind"); });
   engine.process(dojio::RingEngine::ProcessMode::Batch);
   sockaddr_in addr{};
   socklen_t len = sizeof(addr);
@@ -48,6 +60,85 @@ std::int32_t make_udp_socket(dojio::RingEngine& engine, sockaddr_in& bound_addr)
   }
   bound_addr = addr;
   return fd;
+}
+
+// The ping-pong is a cycle of operations, each handing its buffer to the next step
+// through the completion result. fd is passed by value (a descriptor is four bytes)
+// and the engine is the first callback parameter, so nothing else needs to be carried.
+
+void echo_b_recv(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::uint64_t payload_size,
+                 dojio::SharedValue<Counters> counters, Bytes recv_buf, Bytes send_buf);
+
+/// b -> a: sends the reply, then arms the next receive on b.
+void echo_b_send(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::uint64_t payload_size,
+                 dojio::SharedValue<Counters> counters, Bytes send_buf, Bytes recv_buf) {
+  ring.submit(dojio::send(fd, std::move(send_buf)), [fd, payload_size, counters, recv_buf = std::move(recv_buf)](
+                                                        dojio::RingEngine& r, dojio::Result<SendResult> res) mutable {
+    if (!res.has_value() || res->size != payload_size) {
+      counters->failed += 1;
+      r.request_stop();
+      return;
+    }
+    echo_b_recv(r, fd, payload_size, std::move(counters), std::move(recv_buf), std::move(res->buffer));
+  });
+}
+
+/// a -> b: receives the request, then echoes it back on b.
+void echo_b_recv(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::uint64_t payload_size,
+                 dojio::SharedValue<Counters> counters, Bytes recv_buf, Bytes send_buf) {
+  ring.submit(dojio::recv(fd, std::move(recv_buf)), [fd, payload_size, counters, send_buf = std::move(send_buf)](
+                                                        dojio::RingEngine& r, dojio::Result<RecvResult> res) mutable {
+    if (!res.has_value() || res->size != payload_size) {
+      counters->failed += 1;
+      r.request_stop();
+      return;
+    }
+    echo_b_send(r, fd, payload_size, std::move(counters), std::move(send_buf), std::move(res->buffer));
+  });
+}
+
+void ping_a_send(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::uint64_t payload_size, std::int32_t iterations,
+                 dojio::SharedValue<Counters> counters, Bytes send_buf, Bytes recv_buf);
+
+/// b -> a: receives the reply, records the round-trip latency, then arms the next send.
+void ping_a_recv(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::uint64_t payload_size, std::int32_t iterations,
+                 dojio::SharedValue<Counters> counters, Bytes recv_buf, Bytes send_buf) {
+  ring.submit(dojio::recv(fd, std::move(recv_buf)), [fd, payload_size, iterations, counters,
+                                                     send_buf = std::move(send_buf)](
+                                                        dojio::RingEngine& r, dojio::Result<RecvResult> res) mutable {
+    if (!res.has_value() || res->size != payload_size) {
+      counters->failed += 1;
+      r.request_stop();
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    counters->latencies_ns.push_back(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - counters->send_a_time).count());
+    counters->round_trips += 1;
+    if (counters->round_trips < iterations) {
+      ping_a_send(r, fd, payload_size, iterations, std::move(counters), std::move(send_buf), std::move(res->buffer));
+    } else {
+      r.request_stop();
+    }
+  });
+}
+
+/// a -> b: stamps the send time, sends the sequence number, then arms the matching receive.
+void ping_a_send(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::uint64_t payload_size, std::int32_t iterations,
+                 dojio::SharedValue<Counters> counters, Bytes send_buf, Bytes recv_buf) {
+  counters->send_a_time = std::chrono::steady_clock::now();
+  const std::uint64_t seq = static_cast<std::uint64_t>(counters->round_trips);
+  std::memcpy(send_buf.data(), &seq, sizeof(seq));
+  ring.submit(
+      dojio::send(fd, std::move(send_buf)), [fd, payload_size, iterations, counters, recv_buf = std::move(recv_buf)](
+                                                dojio::RingEngine& r, dojio::Result<SendResult> res) mutable {
+        if (!res.has_value() || res->size != payload_size) {
+          counters->failed += 1;
+          r.request_stop();
+          return;
+        }
+        ping_a_recv(r, fd, payload_size, iterations, std::move(counters), std::move(recv_buf), std::move(res->buffer));
+      });
 }
 
 } // namespace
@@ -71,90 +162,14 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
     return 1;
   }
 
-  std::vector<std::byte> payload(static_cast<std::size_t>(payload_size));
-  std::optional<std::vector<std::byte>> send_a_buf = payload; // a -> b
-  std::optional<std::vector<std::byte>> recv_a_buf;           // b -> a
-  std::optional<std::vector<std::byte>> send_b_buf = payload; // b -> a
-  std::optional<std::vector<std::byte>> recv_b_buf;           // a -> b
-  recv_a_buf.emplace(static_cast<std::size_t>(payload_size));
-  recv_b_buf.emplace(static_cast<std::size_t>(payload_size));
+  dojio::SharedValue<Counters> counters = dojio::SharedValue<Counters>::make(std::pmr::new_delete_resource());
+  counters->latencies_ns.reserve(static_cast<std::size_t>(iterations));
 
-  std::vector<std::int64_t> latencies_ns;
-  latencies_ns.reserve(static_cast<std::size_t>(iterations));
-  std::int32_t round_trips = 0;
-  dojio::OperationId recv_b_id{};
-  std::chrono::steady_clock::time_point t_send_a;
+  ping_a_send(*engine, dojio::FileDescriptor{a}, payload_size, iterations, counters,
+              Bytes(static_cast<std::size_t>(payload_size)), Bytes(static_cast<std::size_t>(payload_size)));
+  echo_b_recv(*engine, dojio::FileDescriptor{b}, payload_size, counters, Bytes(static_cast<std::size_t>(payload_size)),
+              Bytes(static_cast<std::size_t>(payload_size)));
 
-  std::function<void()> submit_recv_a;
-  std::function<void()> submit_send_a;
-  std::function<void()> submit_recv_b;
-  std::function<void()> submit_send_b;
-
-  submit_recv_b = [&] {
-    recv_b_id = engine->submit(dojio::recv(dojio::FileDescriptor{b}), std::move(*recv_b_buf),
-                               [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
-                                 if (!r.has_value() || res <= 0) {
-                                   engine->request_stop();
-                                   return;
-                                 }
-                                 recv_b_buf = std::move(*r);
-                                 recv_b_buf->resize(static_cast<std::size_t>(payload_size));
-                                 submit_send_b();
-                               });
-  };
-
-  submit_send_b = [&] {
-    engine->submit(dojio::send(dojio::FileDescriptor{b}), std::move(*send_b_buf),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
-                     if (!r.has_value() || res <= 0) {
-                       engine->request_stop();
-                       return;
-                     }
-                     send_b_buf = std::move(*r);
-                     submit_recv_b(); // arm the next receive on b
-                   });
-  };
-
-  submit_send_a = [&] {
-    t_send_a = std::chrono::steady_clock::now();
-    const std::uint64_t seq = static_cast<std::uint64_t>(round_trips);
-    std::memcpy(send_a_buf->data(), &seq, sizeof(seq));
-    engine->submit(dojio::send(dojio::FileDescriptor{a}), std::move(*send_a_buf),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
-                     if (!r.has_value() || res <= 0) {
-                       engine->request_stop();
-                       return;
-                     }
-                     send_a_buf = std::move(*r);
-                   });
-  };
-
-  submit_recv_a = [&] {
-    engine->submit(dojio::recv(dojio::FileDescriptor{a}), std::move(*recv_a_buf),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
-                     if (!r.has_value() || res <= 0) {
-                       engine->request_stop();
-                       return;
-                     }
-                     recv_a_buf = std::move(*r);
-                     const auto now = std::chrono::steady_clock::now();
-                     latencies_ns.push_back(
-                         std::chrono::duration_cast<std::chrono::nanoseconds>(now - t_send_a).count());
-                     round_trips += 1;
-                     if (round_trips < iterations) {
-                       recv_a_buf->resize(static_cast<std::size_t>(payload_size));
-                       submit_recv_a(); // arm the next receive on a
-                       submit_send_a();
-                     } else {
-                       engine->cancel(recv_b_id); // nothing will arrive on b anymore
-                       engine->request_stop();
-                     }
-                   });
-  };
-
-  submit_recv_b();
-  submit_recv_a();
-  submit_send_a();
   const auto t_start = std::chrono::steady_clock::now();
   engine->process(dojio::RingEngine::ProcessMode::Forever);
   const auto elapsed =
@@ -163,6 +178,7 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   ::close(a);
   ::close(b);
 
+  std::vector<std::int64_t>& latencies_ns = counters->latencies_ns;
   if (latencies_ns.empty()) {
     fmt::print(stderr, "no round trip completed\n");
     return 1;
@@ -176,14 +192,15 @@ int main(int argc, char** argv) { // main() signature is the C runtime ABI
   const double avg = static_cast<double>(std::accumulate(latencies_ns.begin(), latencies_ns.end(), std::int64_t{0})) /
                      static_cast<double>(lat_count);
 
-  fmt::print("dojio UDP ping-pong: {} round trips, payload {} bytes (sqpoll {})\n", round_trips, payload_size,
+  fmt::print("dojio UDP ping-pong: {} round trips, payload {} bytes (sqpoll {})\n", counters->round_trips, payload_size,
              sqpoll ? "on" : "off");
   fmt::print("  round-trip latency (us): min {:.3f}  avg {:.3f}  p50 {:.3f}  p99 {:.3f}  max {:.3f}\n",
              static_cast<double>(min) / 1e3, avg / 1e3, static_cast<double>(p50) / 1e3, static_cast<double>(p99) / 1e3,
              static_cast<double>(max) / 1e3);
   const double wall_s = static_cast<double>(elapsed) / 1e9;
   fmt::print("  wall time: {:.3f} s, throughput: {:.0f} round trips/s ({:.2f} MiB/s payload)\n", wall_s,
-             static_cast<double>(round_trips) / wall_s,
-             static_cast<double>(round_trips) / wall_s * (2.0 * static_cast<double>(payload_size)) / (1024.0 * 1024.0));
+             static_cast<double>(counters->round_trips) / wall_s,
+             static_cast<double>(counters->round_trips) / wall_s * (2.0 * static_cast<double>(payload_size)) /
+                 (1024.0 * 1024.0));
   return 0;
 }

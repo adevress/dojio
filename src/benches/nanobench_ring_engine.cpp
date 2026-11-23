@@ -61,15 +61,15 @@ int main() {
   constexpr std::int32_t k_idle_timers = 1024;
   for (std::int32_t i = 0; i < k_idle_timers; ++i) {
     idle_engine->submit(dojio::Timer{std::chrono::seconds(60)},
-                        [](dojio::Result<std::monostate>, dojio::OperationId, std::int32_t) {});
+                        [](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult>) {});
   }
   idle_engine->process(dojio::RingEngine::ProcessMode::NonBlocking);
 
   bench.run("preads 64x4KB + process(Batch)", [&] {
     for (std::int32_t i = 0; i < k_batch; ++i) {
-      engine->submit(dojio::pread(dojio::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk),
-                     std::vector<std::byte>(static_cast<std::size_t>(k_chunk)),
-                     [](dojio::Result<std::vector<std::byte>>, dojio::OperationId, std::int32_t) {});
+      engine->submit(dojio::pread(dojio::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk,
+                                  std::vector<std::byte>(static_cast<std::size_t>(k_chunk))),
+                     [](dojio::RingEngine&, dojio::Result<dojio::PreadResult<std::vector<std::byte>>>) {});
     }
     engine->process(dojio::RingEngine::ProcessMode::Batch);
     ankerl::nanobench::doNotOptimizeAway(engine->count_operations(dojio::RingEngine::OperationState::Completed));
@@ -77,9 +77,9 @@ int main() {
 
   bench.run("preads 64x4KB with registered buffers (READ_FIXED)", [&] {
     for (std::int32_t i = 0; i < k_batch; ++i) {
-      engine->submit(dojio::pread(dojio::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk),
-                     pool.borrow().value(),
-                     [](dojio::Result<dojio::RegisteredBuffer>, dojio::OperationId, std::int32_t) {});
+      engine->submit(
+          dojio::pread(dojio::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk, pool.borrow().value()),
+          [](dojio::RingEngine&, dojio::Result<dojio::PreadResult<dojio::RegisteredBuffer>>) {});
     }
     engine->process(dojio::RingEngine::ProcessMode::Batch);
     ankerl::nanobench::doNotOptimizeAway(engine->count_operations(dojio::RingEngine::OperationState::Completed));
@@ -89,17 +89,16 @@ int main() {
     std::vector<std::int32_t> fds;
     fds.reserve(k_batch);
     for (std::int32_t i = 0; i < k_batch; ++i) {
-      engine->submit(dojio::open_at(path, O_RDONLY, 0),
-                     [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
-                       if (r.has_value()) {
-                         fds.push_back(r->value());
-                       }
-                     });
+      engine->submit(dojio::open_at(path, O_RDONLY, 0), [&](dojio::RingEngine&, dojio::Result<dojio::OpenAtResult> r) {
+        if (r.has_value()) {
+          fds.push_back(r->fd.value());
+        }
+      });
     }
     engine->process(dojio::RingEngine::ProcessMode::Batch);
     for (const std::int32_t fd : fds) {
       engine->submit(dojio::close(dojio::FileDescriptor{fd}),
-                     [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+                     [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     }
     engine->process(dojio::RingEngine::ProcessMode::Batch);
     ankerl::nanobench::doNotOptimizeAway(fds.size());
@@ -107,9 +106,9 @@ int main() {
 
   bench.run("1024 idle timers + 64 preads", [&] {
     for (std::int32_t i = 0; i < k_batch; ++i) {
-      idle_engine->submit(dojio::pread(dojio::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk),
-                          std::vector<std::byte>(static_cast<std::size_t>(k_chunk)),
-                          [](dojio::Result<std::vector<std::byte>>, dojio::OperationId, std::int32_t) {});
+      idle_engine->submit(dojio::pread(dojio::FileDescriptor{file_fd}, static_cast<std::uint64_t>(i) * k_chunk,
+                                       std::vector<std::byte>(static_cast<std::size_t>(k_chunk))),
+                          [](dojio::RingEngine&, dojio::Result<dojio::PreadResult<std::vector<std::byte>>>) {});
     }
     while (idle_engine->count_operations(dojio::RingEngine::OperationState::Pending) >
            static_cast<std::uint64_t>(k_idle_timers)) {
@@ -119,8 +118,8 @@ int main() {
   });
 
   bench.run("timer submit + cancel + process", [&] {
-    const dojio::OperationId id = engine->submit(
-        dojio::Timer{std::chrono::seconds(60)}, [](dojio::Result<std::monostate>, dojio::OperationId, std::int32_t) {});
+    const dojio::OperationId id = engine->submit(dojio::Timer{std::chrono::seconds(60)},
+                                                 [](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult>) {});
     engine->cancel(id);
     engine->process(dojio::RingEngine::ProcessMode::Batch);
     ankerl::nanobench::doNotOptimizeAway(engine->count_operations(dojio::RingEngine::OperationState::Failed));

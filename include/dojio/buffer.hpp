@@ -4,8 +4,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 
 namespace dojio {
+
+/// Concept for the buffers accepted by the operations: std::vector, std::array,
+/// StaticBuffer or RegisteredBuffer (any container of a trivially copyable value type
+/// with data()/size()).
+template <typename T>
+concept BufferLike = requires(T& t) {
+  typename T::value_type;
+  { t.data() };
+  { t.size() };
+} && std::is_trivially_copyable_v<typename T::value_type>;
 
 /// Size of a sockaddr_storage on Linux, used for the peer address of Accept.
 inline constexpr std::uint64_t k_sockaddr_storage_size = 128;

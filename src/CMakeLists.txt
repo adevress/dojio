@@ -97,7 +97,7 @@ dojio_add_library(dojio
 # unit tests (doctest) — public API only
 dojio_add_test(dojio_unit_tests
     SOURCES "tests/entry_point_unit_test.cpp" "tests/test_contracts.cpp" "tests/test_result.cpp"
-            "tests/test_box_ptr.cpp" "tests/test_fd_timer.cpp" "tests/test_memory_pool.cpp" "tests/test_operations.cpp"
+            "tests/test_box_ptr.cpp" "tests/test_shared_value.cpp" "tests/test_fd_timer.cpp" "tests/test_memory_pool.cpp" "tests/test_operations.cpp"
             "tests/test_ring_engine.cpp" "tests/test_slot_table.cpp" "tests/test_ops_file.cpp" "tests/test_ops_socket.cpp"
             "tests/test_ops_pipe.cpp" "tests/test_socket.cpp" "tests/test_timer.cpp"
     LIBS dojio fmt::fmt

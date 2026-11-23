@@ -101,9 +101,9 @@ TEST_CASE("Connect operation connects to a listening localhost server") {
     // bind through the RingEngine (inline Bind operation)
     bool bound = false;
     engine->submit(dojio::bind(dojio::FileDescriptor{lfd}, dojio::Ipv4Endpoint::loopback(0)),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::BindResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 0);
+                     CHECK(r->fd.value() == lfd);
                      bound = true;
                    });
     engine->process(Mode::Batch);
@@ -115,7 +115,7 @@ TEST_CASE("Connect operation connects to a listening localhost server") {
     const auto port = static_cast<std::uint16_t>(ntohs(addr.sin_port));
 
     engine->submit(dojio::listen(dojio::FileDescriptor{lfd}, 16),
-                   [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+                   [](dojio::RingEngine&, dojio::Result<dojio::ListenResult>) {});
     engine->process(Mode::Batch);
 
     auto client =
@@ -125,9 +125,9 @@ TEST_CASE("Connect operation connects to a listening localhost server") {
 
     bool connected = false;
     engine->submit(dojio::connect(dojio::FileDescriptor{cfd}, dojio::Ipv4Endpoint::loopback(port)),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::ConnectResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 0);
+                     CHECK(r->fd.value() == cfd);
                      connected = true;
                    });
     engine->process(Mode::Batch);
@@ -135,33 +135,32 @@ TEST_CASE("Connect operation connects to a listening localhost server") {
 
     // the server side accepts the connection
     dojio::FileDescriptor accepted{-1};
-    engine->submit(dojio::accept(dojio::FileDescriptor{lfd}), dojio::AcceptBuffer{},
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::accept(dojio::FileDescriptor{lfd}),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::AcceptResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res >= 0);
-                     accepted = *r;
+                     accepted = r->fd;
                    });
     engine->process(Mode::Batch);
     REQUIRE(accepted.value() >= 0);
 
     // data flows over the ring-connected socket
     std::string received;
-    engine->submit(dojio::recv(accepted), std::vector<std::byte>(16),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t) {
+    engine->submit(dojio::recv(accepted, std::vector<std::byte>(16)),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::RecvResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     received = to_string(*r);
+                     received = to_string(r->buffer);
                    });
-    engine->submit(dojio::send(dojio::FileDescriptor{cfd}), to_bytes("ring-connect"),
-                   [](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::send(dojio::FileDescriptor{cfd}, to_bytes("ring-connect")),
+                   [](dojio::RingEngine&, dojio::Result<dojio::SendResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 12);
+                     CHECK(r->size == 12);
                    });
     engine->process(Mode::Batch);
     CHECK(received == "ring-connect");
 
-    engine->submit(dojio::close(accepted), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(accepted), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->submit(dojio::close(dojio::FileDescriptor{cfd}),
-                   [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+                   [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->process(Mode::Batch);
     ::close(lfd);
   }
@@ -180,7 +179,7 @@ TEST_CASE("Connect to a closed port fails with ECONNREFUSED") {
     // port 1 on loopback is not listening
     bool called = false;
     engine->submit(dojio::connect(*client, dojio::Ipv4Endpoint::loopback(1)),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::ConnectResult> r) {
                      called = true;
                      CHECK_FALSE(r.has_value());
                      REQUIRE(std::holds_alternative<dojio::IoError>(r.error()));
@@ -207,9 +206,9 @@ TEST_CASE("Fsync operation syncs a file") {
 
     bool synced = false;
     engine->submit(dojio::fsync(dojio::FileDescriptor{fd}),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::FsyncResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 0);
+                     CHECK(r->fd.value() == fd);
                      synced = true;
                    });
     engine->process(Mode::Batch);
@@ -217,16 +216,16 @@ TEST_CASE("Fsync operation syncs a file") {
 
     bool datasync_ok = false;
     engine->submit(dojio::fsync(dojio::FileDescriptor{fd}, true),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::FsyncResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 0);
+                     CHECK(r->use_datasync);
                      datasync_ok = true;
                    });
     engine->process(Mode::Batch);
     CHECK(datasync_ok);
 
     engine->submit(dojio::close(dojio::FileDescriptor{fd}),
-                   [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+                   [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->process(Mode::Batch);
     ::unlink(path.c_str());
   }
@@ -254,25 +253,24 @@ TEST_CASE("OpenAt operation opens a file relative to a dirfd") {
 
     dojio::FileDescriptor fd{-1};
     engine->submit(dojio::open_at(dojio::FileDescriptor{dirfd}, name, O_RDONLY),
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::OpenAtResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res >= 0);
-                     fd = *r;
+                     fd = r->fd;
                    });
     engine->process(Mode::Batch);
     REQUIRE(fd.value() >= 0);
 
     std::string content;
-    engine->submit(dojio::pread(fd, 0), std::vector<std::byte>(64),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::pread(fd, 0, std::vector<std::byte>(64)),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::PreadResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 14);
-                     content = to_string(*r);
+                     CHECK(r->size == 14);
+                     content = to_string(r->buffer);
                    });
     engine->process(Mode::Batch);
     CHECK(content == "openat-content");
 
-    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(fd), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->process(Mode::Batch);
     ::close(dirfd);
     ::unlink(full.c_str());
@@ -294,9 +292,9 @@ TEST_CASE("Bind operation binds a socket to an IPv4 endpoint") {
 
     bool bound = false;
     engine->submit(dojio::bind(fd, dojio::Ipv4Endpoint::loopback(0)),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::BindResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 0);
+                     CHECK(r->fd == fd);
                      bound = true;
                    });
     engine->process(Mode::Batch);
@@ -316,7 +314,7 @@ TEST_CASE("Bind operation binds a socket to an IPv4 endpoint") {
     REQUIRE(sock2.has_value());
     bool failed = false;
     engine->submit(dojio::bind(*sock2, dojio::Ipv4Endpoint::loopback(ntohs(addr.sin_port))),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::BindResult> r) {
                      CHECK_FALSE(r.has_value());
                      REQUIRE(std::holds_alternative<dojio::IoError>(r.error()));
                      CHECK(std::get<dojio::IoError>(r.error()).value == -EADDRINUSE);
@@ -325,8 +323,8 @@ TEST_CASE("Bind operation binds a socket to an IPv4 endpoint") {
     engine->process(Mode::Batch);
     CHECK(failed);
 
-    engine->submit(dojio::close(*sock2), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
-    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(*sock2), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
+    engine->submit(dojio::close(fd), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->process(Mode::Batch);
   }
 }
@@ -347,9 +345,9 @@ TEST_CASE("Bind and Listen operations work over IPv6") {
 
     bool bound = false;
     engine->submit(dojio::bind(fd, dojio::Ipv6Endpoint::loopback(0)),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::BindResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 0);
+                     CHECK(r->fd == fd);
                      bound = true;
                    });
     engine->process(Mode::Batch);
@@ -364,9 +362,9 @@ TEST_CASE("Bind and Listen operations work over IPv6") {
     CHECK(ntohs(addr.sin6_port) != 0);
 
     bool listened = false;
-    engine->submit(dojio::listen(fd, 16), [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::listen(fd, 16), [&](dojio::RingEngine&, dojio::Result<dojio::ListenResult> r) {
       REQUIRE(r.has_value());
-      CHECK(res == 0);
+      CHECK(r->fd == fd);
       listened = true;
     });
     engine->process(Mode::Batch);
@@ -382,12 +380,10 @@ TEST_CASE("Bind and Listen operations work over IPv6") {
     REQUIRE(::connect(cfd, reinterpret_cast<const sockaddr*>(&caddr), sizeof(caddr)) == 0);
 
     dojio::FileDescriptor accepted{-1};
-    engine->submit(dojio::accept(fd), dojio::AcceptBuffer{},
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t res) {
-                     REQUIRE(r.has_value());
-                     CHECK(res >= 0);
-                     accepted = *r;
-                   });
+    engine->submit(dojio::accept(fd), [&](dojio::RingEngine&, dojio::Result<dojio::AcceptResult> r) {
+      REQUIRE(r.has_value());
+      accepted = r->fd;
+    });
     engine->process(Mode::Batch);
     REQUIRE(accepted.value() >= 0);
 
@@ -397,8 +393,8 @@ TEST_CASE("Bind and Listen operations work over IPv6") {
     CHECK(peer.sin6_family == AF_INET6);
     CHECK(peer.sin6_addr.s6_addr[15] == 1);
 
-    engine->submit(dojio::close(accepted), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
-    engine->submit(dojio::close(fd), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(accepted), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
+    engine->submit(dojio::close(fd), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->process(Mode::Batch);
     ::close(cfd);
   }
