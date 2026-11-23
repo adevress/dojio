@@ -13,6 +13,7 @@ enum class ErrorOpcode : std::uint32_t {
   MemoryPoolRegisterBuffers = 4, ///< io_uring_register(IORING_REGISTER_BUFFERS) failed
   MemoryPoolExhausted = 5,       ///< borrow() on an exhausted pool
   NotSupported = 6,              ///< the operation is not supported on this platform
+  MemoryPoolRingFd = 7,          ///< duplicating the ring file descriptor owned by the pool (fcntl(2)) failed
 };
 
 /// Error reported by the fallible operations of the library (e.g.

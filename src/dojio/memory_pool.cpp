@@ -3,15 +3,19 @@
 #include <dojio/contracts.hpp>
 #include <dojio/ring.hpp>
 
+#include <fcntl.h>
 #include <fmt/format.h>
+#include <linux/io_uring.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <limits>
-#include <new>
+#include <memory>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace dojio {
@@ -19,27 +23,231 @@ namespace dojio {
 namespace {
 
 // sysconf(3) returns long (C API boundary); narrowed with an explicit cast.
-std::uint64_t query_page_size() {
+std::uint64_t read_page_size() {
   const auto v = ::sysconf(_SC_PAGESIZE);
   return v > 0 ? static_cast<std::uint64_t>(v) : std::uint64_t{4096};
+}
+
+// syscall(2) returns long (C API boundary): narrowed to the raw io_uring_register(2)
+// result, which is 0 on success and the negated errno on failure.
+std::int32_t sys_io_uring_register(std::int32_t ring_fd, std::uint32_t opcode, const void* arg, std::uint32_t nr_args) {
+  enforce_precondition(ring_fd >= 0);
+  return static_cast<std::int32_t>(::syscall(__NR_io_uring_register, ring_fd, opcode, arg, nr_args));
+}
+
+// io_uring_register(IORING_REGISTER_BUFFERS, ...): registers nr fixed buffers.
+std::int32_t register_buffers(std::int32_t ring_fd, const iovec* iovecs, std::uint32_t nr) {
+  enforce_precondition(iovecs != nullptr && nr > 0);
+  return sys_io_uring_register(ring_fd, IORING_REGISTER_BUFFERS, iovecs, nr);
+}
+
+// io_uring_register(IORING_UNREGISTER_BUFFERS, ...): drops all the fixed buffers of the ring.
+std::int32_t unregister_buffers(std::int32_t ring_fd) {
+  return sys_io_uring_register(ring_fd, IORING_UNREGISTER_BUFFERS, nullptr, 0);
 }
 
 } // namespace
 
 std::uint64_t cache_line_size() noexcept { return 64; }
 
-RegisteredBuffer::RegisteredBuffer(RegisteredMemoryPool& pool, std::uint64_t index) : pool_(&pool), index_(index) {}
+std::uint64_t page_size() noexcept {
+  // function-local static: initialized once, thread-safe since C++11
+  // cppcheck-suppress misra-cpp-2023-6.7.1 ; MISRA C++ deviation DEV-009: immutable, thread-safe page-size cache
+  static const std::uint64_t size = read_page_size();
+  return size;
+}
 
-RegisteredBuffer::RegisteredBuffer(RegisteredBuffer&& other) noexcept : pool_(other.pool_), index_(other.index_) {
-  other.pool_ = nullptr;
+// The pool implementation: every data member of the pool lives here, so the public
+// header only carries a unique_ptr and the pool is movable by construction.
+class RegisteredMemoryPool::Impl {
+public:
+  Impl(std::int32_t ring_fd, std::uint64_t buffer_size, std::uint64_t chunk_size, std::uint64_t count,
+       std::uint64_t mapped_size, std::byte* memory);
+  ~Impl();
+
+  Impl(const Impl&) = delete;
+  Impl& operator=(const Impl&) = delete;
+  Impl(Impl&&) = delete;
+  Impl& operator=(Impl&&) = delete;
+
+  [[nodiscard]] std::uint64_t buffer_size() const noexcept { return buffer_size_; }
+  [[nodiscard]] std::uint64_t count() const noexcept { return count_; }
+  [[nodiscard]] std::uint64_t active_count() const noexcept {
+    return count_ - static_cast<std::uint64_t>(free_indices_.size());
+  }
+  [[nodiscard]] std::uint64_t available() const noexcept { return static_cast<std::uint64_t>(free_indices_.size()); }
+  [[nodiscard]] std::byte* base() const noexcept { return memory_; }
+  [[nodiscard]] std::byte* chunk(std::uint64_t index) const noexcept {
+    return memory_ + static_cast<std::size_t>(index * chunk_size_);
+  }
+
+  /// Pops a free chunk index. Returns false when the pool is exhausted.
+  [[nodiscard]] bool acquire(std::uint64_t& index) noexcept;
+  /// Returns a chunk index to the free stack.
+  void release(std::uint64_t index) noexcept;
+
+private:
+  std::int32_t ring_fd_ = -1; // close-on-exec duplicate of the ring fd, closed on destruction
+  std::uint64_t buffer_size_ = 0;
+  std::uint64_t chunk_size_ = 0; // cache-line aligned stride between two chunks
+  std::uint64_t count_ = 0;
+  std::uint64_t mapped_size_ = 0; // size of the whole mmap'ed page range
+  std::byte* memory_ = nullptr;
+  std::vector<std::uint64_t> free_indices_; // stack of the free chunk indices
+};
+
+RegisteredMemoryPool::Impl::Impl(std::int32_t ring_fd, std::uint64_t buffer_size, std::uint64_t chunk_size,
+                                 std::uint64_t count, std::uint64_t mapped_size, std::byte* memory)
+    : ring_fd_(ring_fd), buffer_size_(buffer_size), chunk_size_(chunk_size), count_(count), mapped_size_(mapped_size),
+      memory_(memory) {
+  // pre-sized free stack: release() never allocates, so it stays noexcept
+  free_indices_.reserve(static_cast<std::size_t>(count_));
+  // index 0 is popped first: the chunks are handed out in address order
+  for (std::uint64_t i = count_; i > 0; --i) {
+    free_indices_.push_back(i - 1);
+  }
+}
+
+RegisteredMemoryPool::Impl::~Impl() {
+  // Invariant: the pool cannot be destroyed while a RegisteredBuffer is active.
+  // (The destructor is noexcept, so the std::logic_error raised on violation turns
+  // into std::terminate.)
+  enforce_invariant(free_indices_.size() == static_cast<std::size_t>(count_));
+  // the fixed buffers must be dropped before the mapping is released
+  enforce_invariant(unregister_buffers(ring_fd_) == 0);
+  // munmap takes a size_t length (C API boundary)
+  enforce_invariant(::munmap(memory_, static_cast<std::size_t>(mapped_size_)) == 0);
+  // last reference on the io_uring instance owned by the pool
+  enforce_invariant(::close(ring_fd_) == 0);
+}
+
+bool RegisteredMemoryPool::Impl::acquire(std::uint64_t& index) noexcept {
+  if (free_indices_.empty()) {
+    return false;
+  }
+  index = free_indices_.back();
+  free_indices_.pop_back();
+  return true;
+}
+
+void RegisteredMemoryPool::Impl::release(std::uint64_t index) noexcept {
+  // invariant: the index is valid and the chunk is currently borrowed (returning the
+  // same buffer twice is a bug: the free stack would then hold more indices than the
+  // pool has chunks)
+  enforce_invariant(index < count_ && free_indices_.size() < static_cast<std::size_t>(count_));
+  free_indices_.push_back(index);
+}
+
+RegisteredMemoryPool::RegisteredMemoryPool(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+
+RegisteredMemoryPool::RegisteredMemoryPool(RegisteredMemoryPool&& other) noexcept = default;
+
+RegisteredMemoryPool& RegisteredMemoryPool::operator=(RegisteredMemoryPool&& other) noexcept = default;
+
+RegisteredMemoryPool::~RegisteredMemoryPool() = default;
+
+RegisteredMemoryPool::Impl& RegisteredMemoryPool::impl() const noexcept {
+  enforce_invariant(impl_ != nullptr);
+  return *impl_;
+}
+
+tl::expected<RegisteredMemoryPool, DojioError>
+RegisteredMemoryPool::create(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count) {
+  enforce_precondition(buffer_size > 0 && count > 0);
+  // io_uring identifies a fixed buffer by a 16-bit index (see RegisteredBuffer::index)
+  enforce_precondition(count <= std::numeric_limits<std::uint16_t>::max());
+
+  // every chunk starts on a cache-line boundary: round the stride up to the cache line size
+  const std::uint64_t cache_line = cache_line_size();
+  enforce_precondition(buffer_size <= std::numeric_limits<std::uint64_t>::max() - (cache_line - 1));
+  const std::uint64_t chunk_size = (buffer_size + cache_line - 1) / cache_line * cache_line;
+  enforce_precondition(count <= std::numeric_limits<std::uint64_t>::max() / chunk_size);
+  const std::uint64_t total = chunk_size * count;
+  // the backing memory is allocated as whole pages and distributed in chunks
+  const std::uint64_t page = page_size();
+  enforce_precondition(total <= std::numeric_limits<std::uint64_t>::max() - (page - 1));
+  const std::uint64_t mapped_size = (total + page - 1) / page * page;
+
+  // the pool owns its own close-on-exec reference on the io_uring instance: the pool
+  // (and the fixed buffers registered on it) stays usable even if the ring object is
+  // destroyed first, and closing the duplicate in the destructor drops that reference
+  const std::int32_t ring_fd = static_cast<std::int32_t>(::fcntl(ring.fd(), F_DUPFD_CLOEXEC, 0));
+  if (ring_fd < 0) {
+    // errno is only valid right after the failing call: capture it before formatting
+    const std::int32_t err = static_cast<std::int32_t>(errno);
+    return tl::unexpected(
+        DojioError{ErrorOpcode::MemoryPoolRingFd,
+                   fmt::format("dojio: RegisteredMemoryPool fcntl(F_DUPFD_CLOEXEC, ring_fd={}) failed: {}", ring.fd(),
+                               std::error_code(err, std::generic_category()).message())});
+  }
+
+  // mmap takes a size_t length and an off_t offset (C API boundaries)
+  void* p = ::mmap(nullptr, static_cast<std::size_t>(mapped_size), detail::combine_flags(PROT_READ, PROT_WRITE),
+                   detail::combine_flags(MAP_PRIVATE, MAP_ANONYMOUS), -1, 0);
+  if (p == MAP_FAILED) {
+    // errno is only valid right after the failing syscall: capture it before formatting
+    const std::int32_t err = static_cast<std::int32_t>(errno);
+    static_cast<void>(::close(ring_fd));
+    return tl::unexpected(DojioError{ErrorOpcode::MemoryPoolMmap,
+                                     fmt::format("dojio: RegisteredMemoryPool mmap(size={}) failed: {}", mapped_size,
+                                                 std::error_code(err, std::generic_category()).message())});
+  }
+  std::byte* memory = static_cast<std::byte*>(p);
+
+  // register every chunk with the ring as a fixed buffer
+  std::vector<iovec> iovecs(static_cast<std::size_t>(count));
+  for (std::uint64_t i = 0; i < count; ++i) {
+    iovecs[static_cast<std::size_t>(i)].iov_base = memory + static_cast<std::size_t>(i * chunk_size);
+    iovecs[static_cast<std::size_t>(i)].iov_len = static_cast<std::size_t>(chunk_size);
+  }
+  const std::int32_t ret = register_buffers(ring_fd, iovecs.data(), static_cast<std::uint32_t>(count));
+  if (ret != 0) {
+    const std::int32_t err = -ret;
+    // the registration failed: undo the mapping and drop the duplicated fd
+    static_cast<void>(::munmap(memory, static_cast<std::size_t>(mapped_size)));
+    static_cast<void>(::close(ring_fd));
+    return tl::unexpected(DojioError{ErrorOpcode::MemoryPoolRegisterBuffers,
+                                     fmt::format("dojio: io_uring_register(IORING_REGISTER_BUFFERS, nr={}) failed: {}",
+                                                 count, std::error_code(err, std::generic_category()).message())});
+  }
+
+  // the buffers are registered: the implementation now owns the mapping and ring_fd
+  return RegisteredMemoryPool(std::make_unique<Impl>(ring_fd, buffer_size, chunk_size, count, mapped_size, memory));
+}
+
+tl::expected<RegisteredBuffer, DojioError> RegisteredMemoryPool::borrow() {
+  Impl& pool = impl();
+  std::uint64_t index = 0;
+  if (!pool.acquire(index)) {
+    return tl::unexpected(DojioError{ErrorOpcode::MemoryPoolExhausted,
+                                     fmt::format("dojio: RegisteredMemoryPool exhausted (count={})", pool.count())});
+  }
+  return RegisteredBuffer(pool, index);
+}
+
+std::uint64_t RegisteredMemoryPool::buffer_size() const noexcept { return impl().buffer_size(); }
+
+std::uint64_t RegisteredMemoryPool::capacity() const noexcept { return impl().count(); }
+
+std::uint64_t RegisteredMemoryPool::active_count() const noexcept { return impl().active_count(); }
+
+std::uint64_t RegisteredMemoryPool::available() const noexcept { return impl().available(); }
+
+std::byte* RegisteredMemoryPool::base() const noexcept { return impl().base(); }
+
+RegisteredBuffer::RegisteredBuffer(RegisteredMemoryPool::Impl& impl, std::uint64_t index) noexcept
+    : impl_(&impl), index_(index) {}
+
+RegisteredBuffer::RegisteredBuffer(RegisteredBuffer&& other) noexcept : impl_(other.impl_), index_(other.index_) {
+  other.impl_ = nullptr;
 }
 
 RegisteredBuffer& RegisteredBuffer::operator=(RegisteredBuffer&& other) noexcept {
   if (this != &other) {
     release();
-    pool_ = other.pool_;
+    impl_ = other.impl_;
     index_ = other.index_;
-    other.pool_ = nullptr;
+    other.impl_ = nullptr;
   }
   return *this;
 }
@@ -47,113 +255,17 @@ RegisteredBuffer& RegisteredBuffer::operator=(RegisteredBuffer&& other) noexcept
 RegisteredBuffer::~RegisteredBuffer() { release(); }
 
 void RegisteredBuffer::release() noexcept {
-  if (pool_ != nullptr) {
-    pool_->return_buffer(index_);
-    pool_ = nullptr;
+  if (impl_ != nullptr) {
+    impl_->release(index_);
+    impl_ = nullptr;
   }
 }
 
 std::byte* RegisteredBuffer::data() const {
-  enforce_precondition(pool_ != nullptr);
-  return pool_->base() + static_cast<std::size_t>(index_ * pool_->chunk_size_);
+  enforce_precondition(impl_ != nullptr);
+  return impl_->chunk(index_);
 }
 
-std::uint64_t RegisteredBuffer::size() const { return pool_ != nullptr ? pool_->buffer_size() : 0; }
-
-tl::expected<std::unique_ptr<RegisteredMemoryPool>, DojioError>
-RegisteredMemoryPool::create(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
-                             std::pmr::memory_resource* resource) {
-  enforce_precondition(buffer_size > 0 && count > 0);
-  auto pool = std::unique_ptr<RegisteredMemoryPool>(new RegisteredMemoryPool(ring, buffer_size, count, resource));
-  auto setup_result = pool->setup();
-  if (!setup_result.has_value()) {
-    return tl::unexpected(std::move(setup_result).error());
-  }
-  return pool;
-}
-
-RegisteredMemoryPool::RegisteredMemoryPool(detail::IoUring& ring, std::uint64_t buffer_size, std::uint64_t count,
-                                           std::pmr::memory_resource* resource)
-    : ring_(ring), buffer_size_(buffer_size), count_(count), resource_(resource), free_(count, 1, resource) {
-  page_size_ = query_page_size();
-  // every chunk starts on a cache-line boundary: round the stride up to the cache line size
-  const std::uint64_t cache_line = cache_line_size();
-  chunk_size_ = (buffer_size_ + cache_line - 1) / cache_line * cache_line;
-  enforce_precondition(count_ <= (std::numeric_limits<std::uint64_t>::max() / chunk_size_));
-  const std::uint64_t total = chunk_size_ * count_;
-  enforce_precondition(total <= (std::numeric_limits<std::uint64_t>::max() - page_size_ + 1));
-  // the backing memory is allocated as whole pages and distributed in chunks
-  const std::uint64_t pages = (total + page_size_ - 1) / page_size_;
-  mapped_size_ = pages * page_size_;
-}
-
-tl::expected<void, DojioError> RegisteredMemoryPool::setup() {
-  // mmap takes a size_t length and an off_t offset (C API boundaries)
-  void* p = ::mmap(nullptr, static_cast<std::size_t>(mapped_size_), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
-                   -1, 0);
-  if (p == MAP_FAILED) {
-    // errno is only valid right after the failing syscall: capture it before formatting
-    const std::int32_t err = static_cast<std::int32_t>(errno);
-    return tl::unexpected(DojioError{ErrorOpcode::MemoryPoolMmap,
-                                     fmt::format("dojio: RegisteredMemoryPool mmap(size={}) failed: {}", mapped_size_,
-                                                 std::error_code(err, std::generic_category()).message())});
-  }
-  memory_ = static_cast<std::byte*>(p);
-  // register every chunk with the ring as a fixed buffer
-  std::vector<iovec> iovecs(static_cast<std::size_t>(count_));
-  for (std::uint64_t i = 0; i < count_; ++i) {
-    iovecs[static_cast<std::size_t>(i)].iov_base = memory_ + static_cast<std::size_t>(i * chunk_size_);
-    iovecs[static_cast<std::size_t>(i)].iov_len = static_cast<std::size_t>(chunk_size_);
-  }
-  // register_buffers returns the raw syscall result: the negated errno on failure
-  const std::int32_t ret = detail::register_buffers(ring_.fd(), iovecs.data(), static_cast<std::uint32_t>(count_));
-  if (ret != 0) {
-    const std::int32_t rc = ::munmap(memory_, static_cast<std::size_t>(mapped_size_));
-    enforce_invariant(rc == 0);
-    memory_ = nullptr;
-    return tl::unexpected(DojioError{ErrorOpcode::MemoryPoolRegisterBuffers,
-                                     fmt::format("dojio: io_uring_register(IORING_REGISTER_BUFFERS, nr={}) failed: {}",
-                                                 count_, std::error_code(-ret, std::generic_category()).message())});
-  }
-  return {};
-}
-
-RegisteredMemoryPool::~RegisteredMemoryPool() {
-  // Invariant: the pool cannot be destroyed while a RegisteredBuffer is active.
-  // (The destructor is noexcept, so the std::logic_error raised on violation turns
-  // into std::terminate.)
-  enforce_invariant(active_count_ == 0);
-  const std::int32_t unregister_rc = detail::unregister_buffers(ring_.fd());
-  enforce_invariant(unregister_rc == 0);
-  if (memory_ != nullptr) {
-    // munmap takes a size_t length (C API boundary)
-    const std::int32_t rc = ::munmap(memory_, static_cast<std::size_t>(mapped_size_));
-    enforce_invariant(rc == 0);
-  }
-}
-
-tl::expected<RegisteredBuffer, DojioError> RegisteredMemoryPool::borrow() {
-  for (std::uint64_t n = 0; n < count_; ++n) {
-    const std::uint64_t i = (hint_ + n) % count_;
-    if (free_[static_cast<std::size_t>(i)] != 0) {
-      free_[static_cast<std::size_t>(i)] = 0;
-      hint_ = (i + 1) % count_;
-      // a free slot was found, so the active counter cannot be at capacity
-      enforce_invariant(active_count_ < count_);
-      active_count_ += 1;
-      return RegisteredBuffer(*this, i);
-    }
-  }
-  return tl::unexpected(DojioError{ErrorOpcode::MemoryPoolExhausted,
-                                   fmt::format("dojio: RegisteredMemoryPool exhausted (count={})", count_)});
-}
-
-void RegisteredMemoryPool::return_buffer(std::uint64_t index) noexcept {
-  // invariant: the index is valid and the buffer is currently borrowed
-  // (returning the same buffer twice is a bug)
-  enforce_invariant(index < count_ && free_[static_cast<std::size_t>(index)] == 0);
-  free_[static_cast<std::size_t>(index)] = 1;
-  active_count_ -= 1;
-}
+std::uint64_t RegisteredBuffer::size() const { return impl_ != nullptr ? impl_->buffer_size() : 0; }
 
 } // namespace dojio

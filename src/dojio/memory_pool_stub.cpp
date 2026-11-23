@@ -7,6 +7,8 @@
 
 #include <fmt/format.h>
 
+#include <utility>
+
 namespace dojio {
 
 namespace {
@@ -19,44 +21,65 @@ DojioError not_supported_error() {
 
 } // namespace
 
-RegisteredBuffer::RegisteredBuffer(RegisteredMemoryPool& pool, std::uint64_t index) : pool_(&pool), index_(index) {}
+// The pool implementation (pimpl): the stub never creates one, create() always fails,
+// so it carries no state.
+class RegisteredMemoryPool::Impl {};
 
-RegisteredBuffer::RegisteredBuffer(RegisteredBuffer&& other) noexcept : pool_(other.pool_), index_(other.index_) {
-  other.pool_ = nullptr;
+RegisteredMemoryPool::RegisteredMemoryPool(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+
+RegisteredMemoryPool::RegisteredMemoryPool(RegisteredMemoryPool&&) noexcept = default;
+
+RegisteredMemoryPool& RegisteredMemoryPool::operator=(RegisteredMemoryPool&&) noexcept = default;
+
+RegisteredMemoryPool::~RegisteredMemoryPool() = default;
+
+RegisteredMemoryPool::Impl& RegisteredMemoryPool::impl() const noexcept { unreachable(); }
+
+tl::expected<RegisteredMemoryPool, DojioError> RegisteredMemoryPool::create(detail::IoUring&, std::uint64_t,
+                                                                            std::uint64_t) {
+  return tl::unexpected(not_supported_error());
+}
+
+tl::expected<RegisteredBuffer, DojioError> RegisteredMemoryPool::borrow() {
+  return tl::unexpected(not_supported_error());
+}
+
+std::uint64_t RegisteredMemoryPool::buffer_size() const noexcept { unreachable(); }
+
+std::uint64_t RegisteredMemoryPool::capacity() const noexcept { unreachable(); }
+
+std::uint64_t RegisteredMemoryPool::active_count() const noexcept { unreachable(); }
+
+std::uint64_t RegisteredMemoryPool::available() const noexcept { unreachable(); }
+
+std::byte* RegisteredMemoryPool::base() const noexcept { unreachable(); }
+
+RegisteredBuffer::RegisteredBuffer(RegisteredMemoryPool::Impl& impl, std::uint64_t index) noexcept
+    : impl_(&impl), index_(index) {}
+
+RegisteredBuffer::RegisteredBuffer(RegisteredBuffer&& other) noexcept : impl_(other.impl_), index_(other.index_) {
+  other.impl_ = nullptr;
 }
 
 RegisteredBuffer& RegisteredBuffer::operator=(RegisteredBuffer&& other) noexcept {
   if (this != &other) {
     release();
-    pool_ = other.pool_;
+    impl_ = other.impl_;
     index_ = other.index_;
-    other.pool_ = nullptr;
+    other.impl_ = nullptr;
   }
   return *this;
 }
 
 RegisteredBuffer::~RegisteredBuffer() { release(); }
 
-void RegisteredBuffer::release() noexcept { pool_ = nullptr; }
+void RegisteredBuffer::release() noexcept { impl_ = nullptr; }
 
 std::byte* RegisteredBuffer::data() const {
-  enforce_precondition(pool_ != nullptr);
+  enforce_precondition(impl_ != nullptr);
   return nullptr;
 }
 
 std::uint64_t RegisteredBuffer::size() const { return 0; }
-
-tl::expected<std::unique_ptr<RegisteredMemoryPool>, DojioError>
-RegisteredMemoryPool::create(detail::IoUring&, std::uint64_t, std::uint64_t, std::pmr::memory_resource*) {
-  return tl::unexpected(not_supported_error());
-}
-
-RegisteredMemoryPool::~RegisteredMemoryPool() = default;
-
-tl::expected<RegisteredBuffer, DojioError> RegisteredMemoryPool::borrow() {
-  return tl::unexpected(not_supported_error());
-}
-
-void RegisteredMemoryPool::return_buffer(std::uint64_t) noexcept {}
 
 } // namespace dojio
