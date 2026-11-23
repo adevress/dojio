@@ -9,9 +9,9 @@
 //
 // Every recv/send is issued with a buffer borrowed from the pool: a RegisteredBuffer
 // aliasing a chunk of the pre-registered, cache-line aligned mmap region. The buffer
-// travels with the operation and comes back through the completion Result, so no
-// buffer memory is allocated on the I/O path and the memory layout is stable for the
-// whole run. The accept carries no address buffer (dojio::accept without a buffer).
+// is embedded in the operation and comes back through the completion result, so no
+// buffer memory is allocated on the I/O path and the layout is stable for the whole
+// run. Only the counters are shared, kept in a dojio::SharedValue.
 //
 // usage: demo_tcp_hello [clients=4] [messages_per_connection=20000] [base_port=24100]
 
@@ -24,10 +24,10 @@
 #include <cstdio> // for stderr
 #include <cstdlib>
 #include <fmt/format.h>
-#include <functional>
-#include <memory>
+#include <memory_resource>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <dojio/dojio.hpp>
@@ -42,10 +42,122 @@ static_assert(k_request.size() == k_reply.size());
 /// Pool buffer size: one message per buffer (recv and send use whole buffers).
 constexpr std::uint64_t k_message_size = k_request.size();
 
-/// Creates the registered buffer pool of one engine, exiting the demo on failure.
-dojio::RegisteredMemoryPool make_pool(dojio::detail::IoUring& ring, std::uint64_t count, std::string_view who) {
-  return dojio::result_or_fail(dojio::RegisteredMemoryPool::create(ring, k_message_size, count),
-                               fmt::format("{}: memory pool", who));
+using RecvResult = dojio::RecvResult<dojio::RegisteredBuffer>;
+using SendResult = dojio::SendResult<dojio::RegisteredBuffer>;
+
+/// Server-side counters shared by every connection callback.
+struct ServerCounters {
+  std::int32_t num_clients = 0;
+  std::int32_t accepted = 0;
+  std::int32_t active = 0;
+};
+
+/// Client-side counter shared by the send/recv chain of one connection.
+struct ClientCounters {
+  std::int32_t count = 0;
+};
+
+/// Terminates a server connection: the buffers are dropped (returned to the pool) and
+/// the server stops once every accepted client is gone.
+void server_connection_done(dojio::RingEngine& ring, dojio::SharedValue<ServerCounters>& counters,
+                            std::int32_t num_clients) {
+  counters->active -= 1;
+  if (counters->accepted == num_clients && counters->active == 0) {
+    ring.request_stop();
+  }
+}
+
+void conn_send(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::int32_t num_clients,
+               dojio::SharedValue<ServerCounters> counters, dojio::RegisteredBuffer send_buf,
+               dojio::RegisteredBuffer recv_buf);
+
+/// Receives one request on an accepted connection, then replies.
+void conn_recv(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::int32_t num_clients,
+               dojio::SharedValue<ServerCounters> counters, dojio::RegisteredBuffer recv_buf,
+               dojio::RegisteredBuffer send_buf) {
+  ring.submit(dojio::recv(fd, std::move(recv_buf)), [fd, num_clients, counters, send_buf = std::move(send_buf)](
+                                                        dojio::RingEngine& r, dojio::Result<RecvResult> res) mutable {
+    if (!res.has_value() || res->size == 0) {
+      server_connection_done(r, counters, num_clients); // client went away
+      return;
+    }
+    conn_send(r, fd, num_clients, std::move(counters), std::move(send_buf), std::move(res->buffer));
+  });
+}
+
+/// Replies on an accepted connection, then arms the next receive.
+void conn_send(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::int32_t num_clients,
+               dojio::SharedValue<ServerCounters> counters, dojio::RegisteredBuffer send_buf,
+               dojio::RegisteredBuffer recv_buf) {
+  ring.submit(dojio::send(fd, std::move(send_buf)), [fd, num_clients, counters, recv_buf = std::move(recv_buf)](
+                                                        dojio::RingEngine& r, dojio::Result<SendResult> res) mutable {
+    if (!res.has_value() || res->size == 0) {
+      server_connection_done(r, counters, num_clients);
+      return;
+    }
+    conn_recv(r, fd, num_clients, std::move(counters), std::move(recv_buf), std::move(res->buffer));
+  });
+}
+
+/// Arms the next accept; called until every client is connected.
+void accept_next(dojio::RingEngine& ring, dojio::FileDescriptor lfd, std::int32_t num_clients,
+                 dojio::SharedValue<ServerCounters> counters, dojio::RegisteredMemoryPool& pool) {
+  ring.submit(dojio::accept(lfd), [lfd, num_clients, counters,
+                                   pool = &pool](dojio::RingEngine& r, dojio::Result<dojio::AcceptResult> res) mutable {
+    if (!res.has_value()) {
+      if (counters->accepted < num_clients) {
+        accept_next(r, lfd, num_clients, std::move(counters), *pool); // keep waiting for clients
+      }
+      return;
+    }
+    counters->accepted += 1;
+    counters->active += 1;
+    // two buffers per connection: one in flight (recv or send), one ready
+    auto recv_buf = dojio::result_or_fail(pool->borrow(), "server: borrow");
+    auto send_buf = dojio::result_or_fail(pool->borrow(), "server: borrow");
+    send_buf.append(k_reply);
+    conn_recv(r, res->fd, num_clients, counters, std::move(recv_buf), std::move(send_buf));
+    if (counters->accepted < num_clients) {
+      accept_next(r, lfd, num_clients, std::move(counters), *pool); // keep accepting
+    }
+  });
+}
+
+void client_recv(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::int32_t messages,
+                 dojio::SharedValue<ClientCounters> counters, dojio::RegisteredBuffer recv_buf,
+                 dojio::RegisteredBuffer send_buf);
+
+/// Sends one request on a client connection, then arms the matching receive.
+void client_send(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::int32_t messages,
+                 dojio::SharedValue<ClientCounters> counters, dojio::RegisteredBuffer send_buf,
+                 dojio::RegisteredBuffer recv_buf) {
+  ring.submit(dojio::send(fd, std::move(send_buf)), [fd, messages, counters, recv_buf = std::move(recv_buf)](
+                                                        dojio::RingEngine& r, dojio::Result<SendResult> res) mutable {
+    if (!res.has_value() || res->size == 0) {
+      r.request_stop();
+      return;
+    }
+    client_recv(r, fd, messages, std::move(counters), std::move(recv_buf), std::move(res->buffer));
+  });
+}
+
+/// Receives one reply, counts the round trip and sends the next request.
+void client_recv(dojio::RingEngine& ring, dojio::FileDescriptor fd, std::int32_t messages,
+                 dojio::SharedValue<ClientCounters> counters, dojio::RegisteredBuffer recv_buf,
+                 dojio::RegisteredBuffer send_buf) {
+  ring.submit(dojio::recv(fd, std::move(recv_buf)), [fd, messages, counters, send_buf = std::move(send_buf)](
+                                                        dojio::RingEngine& r, dojio::Result<RecvResult> res) mutable {
+    if (!res.has_value() || res->size == 0) {
+      r.request_stop();
+      return;
+    }
+    counters->count += 1;
+    if (counters->count < messages) {
+      client_send(r, fd, messages, std::move(counters), std::move(send_buf), std::move(res->buffer));
+    } else {
+      r.request_stop();
+    }
+  });
 }
 
 } // namespace
@@ -67,8 +179,10 @@ int main(int argc, char** argv) {
     auto engine = dojio::result_or_fail(dojio::RingEngine::create(engine_opts), "server: ring engine");
     // one pool for the whole server: every connection holds at most one buffer for its
     // pending recv and one for its pending send
-    dojio::RegisteredMemoryPool pool =
-        make_pool(engine->ring(), static_cast<std::uint64_t>(2) * static_cast<std::uint64_t>(num_clients), "server");
+    dojio::RegisteredMemoryPool pool = dojio::result_or_fail(
+        dojio::RegisteredMemoryPool::create(engine->ring(), k_message_size,
+                                            static_cast<std::uint64_t>(2) * static_cast<std::uint64_t>(num_clients)),
+        "server: memory pool");
     const std::int32_t lfd =
         dojio::result_or_fail(dojio::create_socket(dojio::AddressFamily::Inet, dojio::SocketType::Stream,
                                                    dojio::SocketProtocol::Tcp, dojio::SocketFlag::CloExec),
@@ -78,101 +192,22 @@ int main(int argc, char** argv) {
     ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     // bind through the RingEngine (IORING_OP_BIND on a recent kernel, inline bind(2) otherwise)
     engine->submit(dojio::bind(dojio::FileDescriptor{lfd}, dojio::Ipv4Endpoint::loopback(base_port)),
-                   [](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
+                   [](dojio::RingEngine&, dojio::Result<dojio::BindResult> r) {
                      dojio::result_or_fail(std::move(r), "server: bind");
                    });
     engine->process(dojio::RingEngine::ProcessMode::Batch);
     // listen through the RingEngine (IORING_OP_LISTEN on a recent kernel, inline listen(2) otherwise)
     engine->submit(dojio::listen(dojio::FileDescriptor{lfd}, 128),
-                   [](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
+                   [](dojio::RingEngine&, dojio::Result<dojio::ListenResult> r) {
                      dojio::result_or_fail(std::move(r), "server: listen");
                    });
     engine->process(dojio::RingEngine::ProcessMode::Batch);
     ready.fetch_add(1);
 
-    // accept/connection state shared by the callbacks below; every callback runs
-    // on this single server thread, so no synchronization is needed
-    struct State {
-      dojio::RingEngine& engine;
-      dojio::RegisteredMemoryPool& pool;
-      std::int32_t lfd;
-      std::int32_t num_clients;
-      std::int32_t accepted = 0;
-      std::int32_t active = 0;
-    };
-    auto state = std::make_shared<State>(State{*engine, pool, lfd, num_clients, 0, 0});
-
-    // per-connection state, self-owned so the recursive callbacks keep it alive
-    struct Conn {
-      std::shared_ptr<State> state;
-      std::int32_t cfd;
-      dojio::RegisteredBuffer rbuf; // buffer of the pending recv
-      dojio::RegisteredBuffer sbuf; // buffer of the pending send
-      std::function<void()> do_recv;
-
-      /// Drops the connection: returns its buffers to the pool and stops the server
-      /// once every accepted client is gone. Breaks the self-reference of do_recv.
-      void release() {
-        do_recv = {};
-        rbuf = {};
-        sbuf = {};
-        state->active -= 1;
-        if (state->accepted == state->num_clients && state->active == 0) {
-          state->engine.request_stop();
-        }
-      }
-    };
-
-    // one outstanding accept at a time; re-armed until every client is connected
-    std::function<void()> do_accept;
-    do_accept = [state, &do_accept] {
-      // the accepted peer address is not needed: accept without an address buffer
-      state->engine.submit(
-          dojio::accept(dojio::FileDescriptor{state->lfd}),
-          [state, &do_accept](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
-            if (!r.has_value()) {
-              if (state->accepted < state->num_clients) {
-                do_accept(); // transient accept error: keep waiting for clients
-              }
-              return;
-            }
-            state->accepted += 1;
-            state->active += 1;
-            // two buffers per connection: one in flight (recv or send), one ready
-            auto conn = std::make_shared<Conn>(Conn{state,
-                                                    r->value(),
-                                                    dojio::result_or_fail(state->pool.borrow(), "server: borrow"),
-                                                    dojio::result_or_fail(state->pool.borrow(), "server: borrow"),
-                                                    {}});
-            conn->sbuf.append(k_reply);
-            conn->do_recv = [conn] {
-              conn->state->engine.submit(
-                  dojio::recv(dojio::FileDescriptor{conn->cfd}), std::move(conn->rbuf),
-                  [conn](dojio::Result<dojio::RegisteredBuffer> rr, dojio::OperationId, std::int32_t res) {
-                    if (!rr.has_value() || res <= 0) {
-                      conn->release(); // client went away
-                      return;
-                    }
-                    conn->rbuf = std::move(*rr); // the buffer came back through the Result
-                    conn->state->engine.submit(
-                        dojio::send(dojio::FileDescriptor{conn->cfd}), std::move(conn->sbuf),
-                        [conn](dojio::Result<dojio::RegisteredBuffer> sr, dojio::OperationId, std::int32_t send_res) {
-                          if (!sr.has_value() || send_res <= 0) {
-                            conn->release();
-                            return;
-                          }
-                          conn->sbuf = std::move(*sr);
-                          conn->do_recv();
-                        });
-                  });
-            };
-            conn->do_recv();
-            if (state->accepted < state->num_clients) {
-              do_accept(); // keep accepting the remaining clients
-            }
-          });
-    };
-    do_accept();
+    dojio::SharedValue<ServerCounters> counters =
+        dojio::SharedValue<ServerCounters>::make(std::pmr::new_delete_resource());
+    counters->num_clients = num_clients;
+    accept_next(*engine, dojio::FileDescriptor{lfd}, num_clients, counters, pool);
     engine->process(dojio::RingEngine::ProcessMode::Forever);
     ::close(lfd);
   });
@@ -186,70 +221,33 @@ int main(int argc, char** argv) {
       auto engine =
           dojio::result_or_fail(dojio::RingEngine::create(engine_opts), fmt::format("client {}: ring engine", i));
       // one buffer for the pending send and one for the pending recv
-      dojio::RegisteredMemoryPool pool = make_pool(engine->ring(), 2, fmt::format("client {}", i));
+      dojio::RegisteredMemoryPool pool = dojio::result_or_fail(
+          dojio::RegisteredMemoryPool::create(engine->ring(), k_message_size, 2), fmt::format("client {}", i));
       const std::int32_t fd =
           dojio::result_or_fail(
               dojio::create_socket(dojio::AddressFamily::Inet, dojio::SocketType::Stream, dojio::SocketProtocol::Tcp),
               fmt::format("client {}: socket", i))
               .value();
-      // connect through the engine with the Connect operation
-      const auto endpoint = dojio::Ipv4Endpoint::loopback(base_port);
-      bool connected = false;
-      for (std::int32_t tries = 0; tries < 10000 && !connected; ++tries) {
-        engine->submit(dojio::connect(dojio::FileDescriptor{fd}, endpoint),
-                       [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
-                         if (r.has_value()) {
-                           connected = true;
-                         }
-                       });
-        engine->process(dojio::RingEngine::ProcessMode::Batch);
-        if (!connected) {
-          std::this_thread::yield();
-        }
-      }
-      if (!connected) {
-        fmt::print(stderr, "client {}: connect failed\n", i);
-        std::exit(1);
-      }
-      dojio::RegisteredBuffer sbuf = dojio::result_or_fail(pool.borrow(), fmt::format("client {}: borrow", i));
-      dojio::RegisteredBuffer rbuf = dojio::result_or_fail(pool.borrow(), fmt::format("client {}: borrow", i));
-      sbuf.append(k_request);
-      std::int64_t count = 0;
+      // connect through the engine with the Connect operation (the server is listening:
+      // the ready counter was incremented after its listen completed)
+      engine->submit(dojio::connect(dojio::FileDescriptor{fd}, dojio::Ipv4Endpoint::loopback(base_port)),
+                     [](dojio::RingEngine&, dojio::Result<dojio::ConnectResult> r) {
+                       dojio::result_or_fail(std::move(r), "client: connect");
+                     });
+      engine->process(dojio::RingEngine::ProcessMode::Batch);
+
+      dojio::SharedValue<ClientCounters> counters =
+          dojio::SharedValue<ClientCounters>::make(std::pmr::new_delete_resource());
+      dojio::RegisteredBuffer send_buf = dojio::result_or_fail(pool.borrow(), fmt::format("client {}: borrow", i));
+      dojio::RegisteredBuffer recv_buf = dojio::result_or_fail(pool.borrow(), fmt::format("client {}: borrow", i));
+      send_buf.append(k_request);
+
       const auto start = std::chrono::steady_clock::now();
-      std::function<void()> do_send;
-      std::function<void()> do_recv;
-      do_recv = [&] {
-        engine->submit(dojio::recv(dojio::FileDescriptor{fd}), std::move(rbuf),
-                       [&](dojio::Result<dojio::RegisteredBuffer> rr, dojio::OperationId, std::int32_t res) {
-                         if (!rr.has_value() || res <= 0) {
-                           engine->request_stop();
-                           return;
-                         }
-                         rbuf = std::move(*rr);
-                         count += 1;
-                         if (count < messages) {
-                           do_send();
-                         } else {
-                           engine->request_stop();
-                         }
-                       });
-      };
-      do_send = [&] {
-        engine->submit(dojio::send(dojio::FileDescriptor{fd}), std::move(sbuf),
-                       [&](dojio::Result<dojio::RegisteredBuffer> sr, dojio::OperationId, std::int32_t res) {
-                         if (!sr.has_value() || res <= 0) {
-                           engine->request_stop();
-                           return;
-                         }
-                         sbuf = std::move(*sr);
-                         do_recv();
-                       });
-      };
-      do_send();
+      client_send(*engine, dojio::FileDescriptor{fd}, messages, counters, std::move(send_buf), std::move(recv_buf));
       engine->process(dojio::RingEngine::ProcessMode::Forever);
       const auto elapsed =
           std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
-      client_msgs[static_cast<std::size_t>(i)] = count;
+      client_msgs[static_cast<std::size_t>(i)] = counters->count;
       client_seconds[static_cast<std::size_t>(i)] = static_cast<double>(elapsed.count()) / 1e9;
       ::close(fd);
     });

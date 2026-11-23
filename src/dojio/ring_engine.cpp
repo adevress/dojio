@@ -313,7 +313,7 @@ void RingEngine::finish(ActionBase& action, std::int32_t res) {
   } else {
     failed_ += 1;
   }
-  action.complete(res);
+  action.complete(*this, res);
 }
 
 std::uint64_t RingEngine::poll(std::uint64_t max_tasks) { return process(ProcessMode::NonBlocking, max_tasks); }

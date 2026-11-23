@@ -37,17 +37,17 @@ TEST_CASE("send/recv over a socketpair") {
     REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
 
     std::string received;
-    std::int32_t sent = -1;
-    engine->submit(dojio::recv(dojio::FileDescriptor{sv[0]}), std::vector<std::byte>(64),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+    std::uint64_t sent = 0;
+    engine->submit(dojio::recv(dojio::FileDescriptor{sv[0]}, std::vector<std::byte>(64)),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::RecvResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 4);
-                     received = to_string(*r);
+                     CHECK(r->size == 4);
+                     received = to_string(r->buffer);
                    });
-    engine->submit(dojio::send(dojio::FileDescriptor{sv[1]}), to_bytes("ping"),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::send(dojio::FileDescriptor{sv[1]}, to_bytes("ping")),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::SendResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     sent = res;
+                     sent = r->size;
                    });
     engine->process(Mode::Batch);
     CHECK(sent == 4);
@@ -76,9 +76,9 @@ TEST_CASE("listen then accept over localhost TCP") {
     // bind through the RingEngine (inline Bind operation)
     bool bound = false;
     engine->submit(dojio::bind(dojio::FileDescriptor{lfd}, dojio::Ipv4Endpoint::loopback(0)),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::BindResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 0);
+                     CHECK(r->fd.value() == lfd);
                      bound = true;
                    });
     engine->process(Mode::Batch);
@@ -91,9 +91,10 @@ TEST_CASE("listen then accept over localhost TCP") {
     // listen through the RingEngine (executed inline when the batch is processed)
     bool listened = false;
     engine->submit(dojio::listen(dojio::FileDescriptor{lfd}, 16),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t res) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::ListenResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 0);
+                     CHECK(r->fd.value() == lfd);
+                     CHECK(r->backlog == 16);
                      listened = true;
                    });
     engine->process(Mode::Batch);
@@ -104,13 +105,12 @@ TEST_CASE("listen then accept over localhost TCP") {
     REQUIRE(cfd >= 0);
     REQUIRE(::connect(cfd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0);
 
-    // accept through the RingEngine, with a buffer for the peer address
+    // accept through the RingEngine (the peer address buffer is embedded in the operation)
     dojio::FileDescriptor accepted{-1};
-    engine->submit(dojio::accept(dojio::FileDescriptor{lfd}), std::vector<std::byte>(sizeof(sockaddr_storage)),
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::accept(dojio::FileDescriptor{lfd}),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::AcceptResult> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res >= 0);
-                     accepted = *r;
+                     accepted = r->fd;
                    });
     engine->process(Mode::Batch);
     REQUIRE(accepted.value() >= 0);
@@ -124,20 +124,20 @@ TEST_CASE("listen then accept over localhost TCP") {
 
     // exchange data over the accepted connection through the RingEngine
     std::string received;
-    engine->submit(dojio::recv(accepted), std::vector<std::byte>(16),
-                   [&](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t) {
+    engine->submit(dojio::recv(accepted, std::vector<std::byte>(16)),
+                   [&](dojio::RingEngine&, dojio::Result<dojio::RecvResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     received = to_string(*r);
+                     received = to_string(r->buffer);
                    });
-    engine->submit(dojio::send(dojio::FileDescriptor{cfd}), to_bytes("hello"),
-                   [](dojio::Result<std::vector<std::byte>> r, dojio::OperationId, std::int32_t res) {
+    engine->submit(dojio::send(dojio::FileDescriptor{cfd}, to_bytes("hello")),
+                   [](dojio::RingEngine&, dojio::Result<dojio::SendResult<std::vector<std::byte>>> r) {
                      REQUIRE(r.has_value());
-                     CHECK(res == 5);
+                     CHECK(r->size == 5);
                    });
     engine->process(Mode::Batch);
     CHECK(received == "hello");
 
-    engine->submit(dojio::close(accepted), [](dojio::Result<std::int32_t>, dojio::OperationId, std::int32_t) {});
+    engine->submit(dojio::close(accepted), [](dojio::RingEngine&, dojio::Result<dojio::CloseResult>) {});
     engine->process(Mode::Batch);
     CHECK(engine->count_operations(State::Failed) == 0);
     ::close(cfd);
@@ -157,7 +157,7 @@ TEST_CASE("listen on a non-socket fd fails with ENOTSOCK") {
     REQUIRE(::pipe(fds) == 0);
     bool called = false;
     engine->submit(dojio::listen(dojio::FileDescriptor{fds[0]}, 4),
-                   [&](dojio::Result<std::int32_t> r, dojio::OperationId, std::int32_t) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::ListenResult> r) {
                      called = true;
                      CHECK_FALSE(r.has_value());
                      REQUIRE(std::holds_alternative<dojio::IoError>(r.error()));
@@ -183,7 +183,7 @@ TEST_CASE("accept on a non-listening socket fails") {
     REQUIRE(fd >= 0);
     bool called = false;
     engine->submit(dojio::accept(dojio::FileDescriptor{fd}),
-                   [&](dojio::Result<dojio::FileDescriptor> r, dojio::OperationId, std::int32_t) {
+                   [&](dojio::RingEngine&, dojio::Result<dojio::AcceptResult> r) {
                      called = true;
                      CHECK_FALSE(r.has_value());
                      CHECK(std::holds_alternative<dojio::IoError>(r.error()));

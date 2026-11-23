@@ -14,12 +14,12 @@ TEST_CASE("Timer fires after the requested duration") {
   const auto start = std::chrono::steady_clock::now();
   std::chrono::nanoseconds elapsed{0};
   bool fired = false;
-  engine->submit(dojio::Timer{std::chrono::milliseconds(50)}, [&](dojio::Result<std::monostate> r, dojio::OperationId,
-                                                                  std::int32_t) {
-    CHECK(r.has_value()); // a fired timer completes successfully
-    fired = true;
-    elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
-  });
+  engine->submit(
+      dojio::Timer{std::chrono::milliseconds(50)}, [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
+        CHECK(r.has_value()); // a fired timer completes successfully
+        fired = true;
+        elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
+      });
   engine->process(dojio::RingEngine::ProcessMode::Batch);
   CHECK(fired);
   CHECK(elapsed >= std::chrono::milliseconds(50));
@@ -32,7 +32,7 @@ TEST_CASE("Timer can be cancelled before it fires") {
   auto engine = std::move(ring_engine_result).value();
   bool called = false;
   const dojio::OperationId id = engine->submit(dojio::Timer{std::chrono::seconds(30)},
-                                               [&](dojio::Result<std::monostate> r, dojio::OperationId, std::int32_t) {
+                                               [&](dojio::RingEngine&, dojio::Result<dojio::TimeoutResult> r) {
                                                  called = true;
                                                  CHECK_FALSE(r.has_value());
                                                  CHECK(std::holds_alternative<dojio::Cancelled>(r.error()));

@@ -31,6 +31,39 @@ applications on Linux, by:
 - Focus on a "never blocking" API appropriate for high performance server or Fiber based io framework
 - Architecture "Zero sharing" (One RingEngine per thread, and message passing between thread)
 
+### Operation model
+
+Every I/O operation is a struct that carries its own buffer, so `submit()` takes only the
+operation and its completion callback:
+
+```cpp
+const dojio::OperationId id =
+    engine.submit(dojio::pread(fd, offset, std::vector<std::byte>(4096)),
+                  [](dojio::RingEngine& ring, dojio::Result<dojio::PreadResult<std::vector<std::byte>>> r) {
+                    if (!r.has_value()) {
+                      // r.error() is the mapped I/O code or the cancellation code
+                      return;
+                    }
+                    const auto& buffer = r->buffer; // the submitted buffer, with the data read
+                    const auto size = r->size;      // number of bytes transferred
+                  });
+```
+
+- the buffer is part of the `<operation>Op` struct, travels with the operation and comes
+  back through the result (nothing is allocated on the I/O path when it is borrowed from a
+  `RegisteredMemoryPool`);
+- every operation defines a `result_value` struct (read/send return their buffer with the
+  transferred `size`, open/accept return a `FileDescriptor`, ...) and a `result` alias,
+  always `tl::expected<result_value, ErrorCode>`;
+- the first parameter of every completion callback is a reference to the underlying
+  `RingEngine`, so a callback can chain new operations without capturing the engine;
+- `dojio::BufferLike` is the concept a type must satisfy to be used as a buffer
+  (`std::vector`, `std::array`, `StaticBuffer<N>`, `RegisteredBuffer`).
+
+`dojio::BoxPtr` and `dojio::SharedValue` provide `std::pmr`-aware owning pointers (the
+shared one reference-counted and copyable, with the count, resource and object in a
+single allocation).
+
 ### Processing modes
 
 `RingEngine::process()` selects how the queued operations are driven:
