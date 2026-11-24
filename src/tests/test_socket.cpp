@@ -23,6 +23,22 @@ std::vector<std::byte> to_bytes(std::string_view s) {
 
 std::string to_string(const std::vector<std::byte>& b) { return {reinterpret_cast<const char*>(b.data()), b.size()}; }
 
+/// True when the kernel has IPv6 enabled and a usable loopback address. IPv6 can
+/// be disabled at the kernel / container level (no ::1 address); the IPv6 socket
+/// test cannot run in that case and is skipped with a message.
+bool ipv6_loopback_available() {
+  const std::int32_t probe = ::socket(AF_INET6, SOCK_STREAM, 0);
+  if (probe < 0) {
+    return false;
+  }
+  sockaddr_in6 loopback{};
+  loopback.sin6_family = AF_INET6;
+  loopback.sin6_addr = in6addr_loopback;
+  const bool bound = ::bind(probe, reinterpret_cast<const sockaddr*>(&loopback), sizeof(loopback)) == 0;
+  ::close(probe);
+  return bound;
+}
+
 } // namespace
 
 TEST_CASE("create_socket creates sockets without exposing C flags") {
@@ -330,6 +346,10 @@ TEST_CASE("Bind operation binds a socket to an IPv4 endpoint") {
 }
 
 TEST_CASE("Bind and Listen operations work over IPv6") {
+  if (!ipv6_loopback_available()) {
+    MESSAGE("IPv6 loopback is not available on this system: skipping the IPv6 bind/listen test");
+    return;
+  }
   for (const bool sqpoll : {true, false}) {
     CAPTURE(sqpoll);
     auto ring_engine_result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64, .sqpoll = sqpoll});

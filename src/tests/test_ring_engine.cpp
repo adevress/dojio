@@ -10,6 +10,31 @@
 #include <dojio/result.hpp>
 #include <dojio/ring_engine.hpp>
 
+namespace {
+
+/// Dispatches `target` callbacks by polling the engine in NonBlocking mode,
+/// retrying while the completions are still being produced, and returns the number
+/// actually dispatched. Each poll() passes the remaining budget as the max_tasks
+/// cap, so no more than `target` callbacks are ever dispatched.
+///
+/// A freshly created SQPOLL ring's kernel thread can take tens of milliseconds to
+/// start servicing the submission queue (notably on a busy or single-CPU system),
+/// so the tests must not rely on a fixed sleep to observe a completion.
+std::uint64_t poll_until(dojio::RingEngine& engine, std::uint64_t target,
+                         std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::uint64_t dispatched = 0;
+  while (dispatched < target && std::chrono::steady_clock::now() < deadline) {
+    dispatched += engine.poll(target - dispatched);
+    if (dispatched < target) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+  return dispatched;
+}
+
+} // namespace
+
 TEST_CASE("create returns a tl::expected: the RingEngine on success, a DojioError on failure") {
   auto result = dojio::RingEngine::create(dojio::RingEngineOptions{.entries = 64});
   REQUIRE(result.has_value());
@@ -195,8 +220,10 @@ TEST_CASE("process(NonBlocking) dispatches ready completions without blocking") 
     CHECK(engine->count_operations(State::Pending) == 1);
     CHECK(engine->count_operations(State::Completed) == 0);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(60));
-    engine->process(dojio::RingEngine::ProcessMode::NonBlocking);
+    // a fresh SQPOLL ring's kernel thread can take tens of milliseconds to start
+    // servicing the queue: poll until the timer has fired rather than sleeping a
+    // fixed amount
+    static_cast<void>(poll_until(*engine, 1));
     CHECK(done == 1);
     CHECK(engine->count_operations(State::Pending) == 0);
     CHECK(engine->count_operations(State::Completed) == 1);
@@ -292,10 +319,10 @@ TEST_CASE("SQPOLL submit() publishes proactively before process() is called") {
                    CHECK(r.has_value());
                    fired = true;
                  });
-  // wait longer than the timer WITHOUT calling process()/poll(): the SQPOLL thread
-  // should already have picked up and completed the timer
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  const std::uint64_t dispatched = engine->poll();
+  // the SQPOLL thread should pick up and complete the timer without process()
+  // being called; its kernel thread can take tens of milliseconds to start, so
+  // poll until the timer has fired instead of sleeping a fixed amount
+  const std::uint64_t dispatched = poll_until(*engine, 1);
   CHECK(dispatched == 1);
   CHECK(fired);
   CHECK(engine->count_operations(dojio::RingEngine::OperationState::Pending) == 0);
@@ -405,10 +432,14 @@ TEST_CASE("process() and poll() respect the max_tasks cap") {
     // max_tasks == 0 flushes SQEs without dispatching any callback
     CHECK(engine->poll(0) == 0);
     CHECK(completed == 0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+
+    // wait for the SQPOLL kernel thread to arm and fire all the timers: it can
+    // take tens of milliseconds to start on a busy or single-CPU system, and the
+    // cap can only be observed once the completions are ready
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     // cap non-blocking poll to 3 tasks
-    const std::uint64_t first = engine->poll(3);
+    const std::uint64_t first = poll_until(*engine, 3);
     CHECK(first == 3);
     CHECK(completed == 3);
     CHECK(engine->count_operations(State::Pending) == 7);

@@ -35,7 +35,7 @@ namespace {
 /// Number of files written in each directory.
 inline constexpr std::int32_t k_file_count = 40;
 /// Size of one file (and of its payload buffer): 4 MiB.
-inline constexpr std::uint64_t k_file_size = 4ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t k_file_size = 16ULL * 1024ULL * 1024ULL;
 /// Fixed seed so that the payload of every run is reproducible.
 inline constexpr std::uint32_t k_random_seed = 0x5eed1234U;
 
