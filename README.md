@@ -2,7 +2,7 @@
   <img src="misc/dojio-logo.png" alt="dojio logo" width="200">
 </p>
 
-<p align="center">A high-performance asynchronous I/O interface for modern C++</p>
+<p align="center">Dojio - Bring value semantics to your async I/O in Modern C++</p>
 
 [![gcc](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=gcc%20build%20%2B%20tests%20%2B%20benches&label=gcc)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
 [![clang](https://img.shields.io/github/check-runs/adevress/dojio/main?nameFilter=clang%20build%20%2B%20tests%20%2B%20benches&label=clang)](https://github.com/adevress/dojio/actions/workflows/ci.yml)
@@ -12,17 +12,42 @@
 
 ## Summary
 
-`dojio` is a C++ library designed to make Asynchronous I/O in modern C++ as painless as possible while not giving up anything on performance.
+`Dojio` is a C++ library for Asynchronous I/O. Dojio has been built from the start around Linux `io_uring` capabilities and Modern C++ capabilities.
 
-Dojio is designed around:
-- `io_uring` Pool based I/O
-- Data oriented API and value/move semantics
-- Not compromise on performance
-- `Share-nothing` architecture
+Dojio differs from other Async I/O toolkit by being *value based* and centered around a *share-nothing* per-thread architecture.
+Dojio also specifically aims to integrate with the RDMA capabilities of modern NIC.
+
+Dojio uses cases:
+- High performance I/O in HPC applications.
+- High throughput servers
+
+## Why Dojio ?
+
+For decades, the defacto standard for asynchronous I/O in C++ has been Boost.ASIO.
+
+If Boost.Asio is still a widely used solution today, it comes with its fair share of issues:
+- The API is large and complex and with a fair amount of foot guns in term of lifetime management.
+- It has been designed in 2003, pre-C++11 and the introduction of move semantics in C++.
+- The reference semantics + multi-thread architecture contains many death trap for performance.
+- It has been designed first and foremost for the Windows pro-actor I/O interface.
+- It is not *real* async I/O for filesystem operations.
+- The Linux Kernel API for I/O has dramatically improved since 2003.
+
+**Dojio** starts on something new:
+- Value semantics makes lifetime one order of magnitude easier to manage
+- It is smaller and lighter and a fraction of the API complexity.
+- it focus on `io_uring` for truly async I/O even on file operations
 
 
-## Why I/O uring
+## Feature support
 
+- Asynchronous File I/O (open/read/write/fsync/close)
+- Asynchronous Socket operations (socket,bind,listen,connect,send,recv)
+- Interprocess (Unix domain socket, pipe)
+- Channels (Inter-queue, Inter-thread communications)
+- Zero Copy
+- Low latency with Kernel polling
+- Deterministic Latency (P99 < 6us )
 
 ## Details
  
@@ -33,7 +58,7 @@ The library ships as a static library, with tests built on
 ### Operation model
 
 
-#### Event mode
+#### Async mode
 
 Every I/O operation is a struct that carries its own buffer, so `submit()` takes only the
 operation and its completion callback:
@@ -46,25 +71,11 @@ const dojio::OperationId id =
                       // r.error() is the mapped I/O code or the cancellation code
                       return;
                     }
-                    const auto& buffer = r->buffer; // the submitted buffer, with the data read
-                    const auto size = r->size;      // number of bytes transferred
+                    auto& buffer = r.value().buffer;
+                    fmt::print("data : ", std::string_view(buffer.data(), buffer.size())
                   });
 ```
 
-- the buffer is part of the `<operation>Op` struct, travels with the operation and comes
-  back through the result (nothing is allocated on the I/O path when it is borrowed from a
-  `RegisteredMemoryPool`);
-- every operation defines a `result_value` struct (read/send return their buffer with the
-  transferred `size`, open/accept return a `FileDescriptor`, ...) and a `result` alias,
-  always `tl::expected<result_value, ErrorCode>`;
-- the first parameter of every completion callback is a reference to the underlying
-  `RingEngine`, so a callback can chain new operations without capturing the engine;
-- `dojio::BufferLike` is the concept a type must satisfy to be used as a buffer
-  (`std::vector`, `std::array`, `StaticBuffer<N>`, `RegisteredBuffer`).
-
-`dojio::BoxPtr` and `dojio::SharedValue` provide `std::pmr`-aware owning pointers (the
-shared one reference-counted and copyable, with the count, resource and object in a
-single allocation).
 
 ### Processing options
 
@@ -77,14 +88,6 @@ i
 | `NonBlocking` | Submit the queued operations and dispatch only the completions that are already ready; never blocks. |
 | `WaitOnce` | Submit, then wait for at least one completion when operations are still pending, dispatch the ready ones and return. |
 
-For fiber or event-loop schedulers, `RingEngine::poll()` is a convenience wrapper around the
-`NonBlocking` path that returns the number of callbacks dispatched (inline + ring), so the caller can
-yield or park the fiber when it returns zero.
-
-Opcode availability is discovered from the running kernel with `IORING_REGISTER_PROBE` (rather than
-`uname(2)` sniffing): `RingEngine::supports_op()` reports whether a given io_uring opcode is exposed,
-and the syscall-backed operations (`bind`/`listen`, `ftruncate`, `pipe`) transparently fall back to
-their synchronous syscall when it is not.
 
 ## Compilation instructions
 
