@@ -15,6 +15,7 @@ guideline is only valid once formally approved; Advisory deviations are recorded
 | DEV-007 | Rule 21.6.1 — Dynamic memory should not be used | Advisory | `src/dojio/ring.cpp`, `src/dojio/ring_engine.cpp`, `src/dojio/memory_pool.cpp`, `src/demos/tcp_hello.cpp`, and the standard containers used throughout | Dynamic memory is used for the long-lived engine/ring/pool objects (`std::unique_ptr` wrapping `new`) and for the standard-library containers (`std::vector`, the `detail::SlotTable` slots, `std::make_shared` in the demo). Every allocation is owned by an RAII smart pointer or container, so Rule 21.6.2 is satisfied; Rule 21.6.1 is Advisory (and the standard acknowledges applications may need dynamic memory, subject to justification), and owning kernel/OS resources with automatic lifetime is the library's purpose. |
 | DEV-009 | Rule 6.7.1 — Local variables shall not have static or thread storage duration | Required | `src/dojio/memory_pool.cpp` (`page_size`) | The page size is constant for the lifetime of the process: reading it once from `sysconf(3)` and caching it in an immutable function-local `static` (C++11 thread-safe initialisation) keeps the `RegisteredMemoryPool` construction free of a repeated `sysconf` call and removes a per-pool data member. The cached value is `const`, trivially copyable and never mutated. |
 
-> **Resolved:** DEV-008 was removed when `src/dojio/version.cpp` was deleted. Opcode availability is no
-> longer cached from `uname(2)`; it is discovered once per ring with `IORING_REGISTER_PROBE` and stored
-> in the `IoUring` instance (`supported_ops_`), so no function-local `static` remains.
+> **Resolved:** DEV-008 was removed when the cached OS-version lookup was dropped. Opcode availability is
+> no longer cached from `uname(2)`; it is discovered once per ring with `IORING_REGISTER_PROBE` and stored
+> in the `IoUring` instance (`supported_ops_`), so no function-local `static` remains. The
+> `src/dojio/version.cpp` that exists again is the `dojio_version()` accessor and holds no static state.

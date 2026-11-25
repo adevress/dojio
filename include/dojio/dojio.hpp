@@ -16,3 +16,4 @@
 #include <dojio/socket.hpp>
 #include <dojio/sqe.hpp>
 #include <dojio/timer.hpp>
+#include <dojio/version.hpp>

@@ -1,5 +1,22 @@
 cmake_minimum_required(VERSION 3.22)
-project(dojio VERSION 0.1.0 LANGUAGES CXX)
+
+# The version is declared once, in the pkg-config package file, and reused as the
+# CMake project version and to generate the version header returned by
+# dojio::dojio_version().
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/dojio.pc.in" DOJIO_PC_VERSION_LINE
+    REGEX "^Version:[ \t]*[0-9]+\\.[0-9]+\\.[0-9]+")
+if(NOT DOJIO_PC_VERSION_LINE)
+message(FATAL_ERROR "dojio.pc.in must declare a x.y.z Version field")
+endif()
+string(REGEX REPLACE "^Version:[ \t]*([0-9]+\\.[0-9]+\\.[0-9]+)" "\\1"
+    DOJIO_VERSION "${DOJIO_PC_VERSION_LINE}")
+
+project(dojio VERSION ${DOJIO_VERSION} LANGUAGES CXX)
+
+string(REPLACE "." ";" DOJIO_VERSION_COMPONENTS "${DOJIO_VERSION}")
+list(GET DOJIO_VERSION_COMPONENTS 0 DOJIO_VERSION_MAJOR)
+list(GET DOJIO_VERSION_COMPONENTS 1 DOJIO_VERSION_MINOR)
+list(GET DOJIO_VERSION_COMPONENTS 2 DOJIO_VERSION_PATCH)
 
 include(CTest)
 include(GNUInstallDirs)
@@ -130,40 +147,18 @@ add_subdirectory(external)
 add_subdirectory(src)
 
 ##
-## install: public headers, static library, CMake package config and pkgconfig
+## install: public headers, static library and pkgconfig
 ##
 
 # the tl::expected header is installed alongside the dojio headers (it is a
 # header-only dependency); the build-tree target is not needed by consumers
-install(TARGETS dojio EXPORT dojioTargets
+install(TARGETS dojio
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-install(EXPORT dojioTargets
-    NAMESPACE dojio::
-    FILE dojioTargets.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dojio
-)
-
-include(CMakePackageConfigHelpers)
-configure_package_config_file(
-    cmake/dojioConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/dojioConfig.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dojio
-)
-write_basic_package_version_file(
-    ${CMAKE_CURRENT_BINARY_DIR}/dojioConfigVersion.cmake
-    VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion
-)
-install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/dojioConfig.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/dojioConfigVersion.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dojio
-)
-
+# pkg-config is the only supported package metadata (no CMake package config)
 configure_file(dojio.pc.in ${CMAKE_CURRENT_BINARY_DIR}/dojio.pc @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/dojio.pc
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig

@@ -88,18 +88,27 @@ else()
     list(APPEND DOJIO_PLATFORM_HEADERS "dojio/io_uring_stub.hpp")
 endif()
 
+# the version declared in dojio.pc.in is baked into the private version header so
+# that dojio_version() reports the packaged version without any runtime lookup
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/dojio/version_config.hpp.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/dojio/version_config.hpp"
+    @ONLY
+)
+
 dojio_add_library(dojio
-    SOURCES "dojio/contracts.cpp" "dojio/ops.cpp" "dojio/result.cpp" "dojio/socket.cpp"
+    SOURCES "dojio/contracts.cpp" "dojio/ops.cpp" "dojio/result.cpp" "dojio/socket.cpp" "dojio/version.cpp"
             ${DOJIO_PLATFORM_SOURCES}
     HEADERS ${DOJIO_PLATFORM_HEADERS}
 )
+target_include_directories(dojio PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # unit tests (doctest) — public API only
 dojio_add_test(dojio_unit_tests
     SOURCES "tests/entry_point_unit_test.cpp" "tests/test_contracts.cpp" "tests/test_result.cpp"
             "tests/test_box_ptr.cpp" "tests/test_shared_value.cpp" "tests/test_fd_timer.cpp" "tests/test_memory_pool.cpp" "tests/test_operations.cpp"
             "tests/test_ring_engine.cpp" "tests/test_slot_table.cpp" "tests/test_ops_file.cpp" "tests/test_ops_socket.cpp"
-            "tests/test_ops_pipe.cpp" "tests/test_socket.cpp" "tests/test_timer.cpp"
+            "tests/test_ops_pipe.cpp" "tests/test_socket.cpp" "tests/test_timer.cpp" "tests/test_version.cpp"
     LIBS dojio fmt::fmt
 )
 

@@ -1,4 +1,8 @@
 # relocatable prefix: this file lives in <prefix>/<libdir>/pkgconfig
+#
+# The `Version` field below is the single source of truth for the dojio version:
+# CMake parses it to set the project version and to generate <dojio/version.hpp>,
+# so `pkg-config --modversion dojio` and dojio::dojio_version() always agree.
 prefix=${pcfiledir}/../..
 exec_prefix=${prefix}
 libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
@@ -6,6 +10,6 @@ includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 
 Name: dojio
 Description: A io_uring interface for modern C++20
-Version: @PROJECT_VERSION@
+Version: 0.2.0
 Cflags: -I${includedir}
 Libs: -L${libdir} -ldojio

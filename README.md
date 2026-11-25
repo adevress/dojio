@@ -179,8 +179,11 @@ cd build-agent
 cmake --install . --prefix /path/to/prefix
 ```
 
-This installs the static library, the public headers, a CMake package config
-(`dojioConfig.cmake`, namespace `dojio::`) and a pkg-config file (`dojio.pc`).
+This installs the static library, the public headers and a pkg-config file
+(`dojio.pc`). pkg-config is the only supported package metadata; there is no CMake
+package config. The library version is declared in `dojio.pc.in` and is exposed at
+runtime through `dojio::dojio_version()`, which returns the `(major, minor, patch)`
+tuple of `std::uint8_t`.
 
 ### Formatting
 

@@ -1,0 +1,12 @@
+#pragma once
+
+#include <cstdint>
+
+// Generated from dojio.pc.in by CMake: do not edit, edit the package file instead.
+namespace dojio::detail {
+
+inline constexpr std::uint8_t version_major = @DOJIO_VERSION_MAJOR@;
+inline constexpr std::uint8_t version_minor = @DOJIO_VERSION_MINOR@;
+inline constexpr std::uint8_t version_patch = @DOJIO_VERSION_PATCH@;
+
+} // namespace dojio::detail
